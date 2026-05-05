@@ -1,169 +1,199 @@
 """
-Low-level rendering layer for the ILI9341 240x320 TFT display.
+ILI9341 240x320 TFT display driver using luma.lcd.
 
-Works with fbcp-ili9341, which mirrors /dev/fb0 to the SPI screen.
-In headless mode  → draws directly to the Linux framebuffer via SDL.
-In desktop mode   → opens a 240x320 window (fbcp-ili9341 picks it up).
+Talks directly to the SPI device — no fbcp-ili9341 framebuffer service needed.
+Wiring assumed:
+  SPI0 CE0  (BCM 8/10/11)
+  DC   = GPIO 24
+  RST  = GPIO 25
+  BL   = GPIO 18  (backlight, active HIGH)
 """
 
 import os
 import time
-import pygame
 from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont
 
+
+# ── Font helpers ──────────────────────────────────────────────────────────────
+
+_FONT_PATHS = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSansMono{suffix}.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationMono-{suffix}.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeMono{suffix}.ttf',
+]
+
+def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    suffix = 'Bold' if bold else ''
+    suffix2 = 'Bold' if bold else 'Regular'
+    for pattern in _FONT_PATHS:
+        path = pattern.format(suffix=suffix) if '{}' not in pattern else pattern.format(suffix=suffix2)
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+
+C = {
+    'bg':      (10,  15,  30),
+    'header':  (18,  28,  58),
+    'accent':  (50,  180, 255),
+    'white':   (235, 242, 255),
+    'gray':    (110, 125, 148),
+    'green':   (55,  210, 105),
+    'orange':  (255, 165,  50),
+    'blue':    (80,  150, 255),
+    'divider': (30,  45,  80),
+}
+
+
+# ── Display class ─────────────────────────────────────────────────────────────
 
 class TFTDisplay:
+    """
+    Renders weather data to an ILI9341 240x320 TFT via luma.lcd.
+
+    Usage:
+        display = TFTDisplay()
+        display.render({
+            'temperature': 22.5, 'humidity': 60.0, 'pressure': 1013.0,
+            'latitude': 55.75, 'longitude': 37.61, 'altitude': 155.0,
+            'gps_fix': True, 'timestamp': time.time(),
+        })
+        display.close()
+    """
+
     WIDTH  = 240
     HEIGHT = 320
 
-    # Refresh rate for weather data (2 Hz is more than enough)
-    FPS = 2
+    def __init__(self,
+                 spi_port: int = 0,
+                 spi_device: int = 0,
+                 gpio_dc: int = 24,
+                 gpio_rst: int = 25,
+                 gpio_backlight: int = 18):
 
-    C = {
-        'bg':      (10,  15,  30),
-        'header':  (18,  28,  58),
-        'accent':  (50,  180, 255),
-        'white':   (235, 242, 255),
-        'gray':    (110, 125, 148),
-        'green':   (55,  210, 105),
-        'orange':  (255, 165,  50),
-        'red':     (255,  70,  70),
-        'blue':    (80,  150, 255),
-        'divider': (30,  45,  80),
-    }
+        from luma.core.interface.serial import spi
+        from luma.lcd.device import ili9341
 
-    def __init__(self, fb_device: str = '/dev/fb0'):
-        if not os.environ.get('DISPLAY'):
-            os.putenv('SDL_FBDEV', fb_device)
-            os.putenv('SDL_VIDEODRIVER', 'fbcon')
-            os.putenv('SDL_NOMOUSE', '1')
+        self._serial = spi(
+            port=spi_port,
+            device=spi_device,
+            gpio_DC=gpio_dc,
+            gpio_RST=gpio_rst,
+            reset_active_low=False,
+        )
+        self._device = ili9341(self._serial, width=self.WIDTH, height=self.HEIGHT, rotate=0)
 
-        pygame.init()
-        pygame.mouse.set_visible(False)
+        # Backlight via gpiozero (works with lgpio on Trixie)
+        self._backlight = None
+        if gpio_backlight is not None:
+            try:
+                from gpiozero import LED
+                self._backlight = LED(gpio_backlight)
+                self._backlight.on()
+            except Exception:
+                pass  # backlight will stay on via hardware pull-up on some boards
 
-        if os.environ.get('DISPLAY'):
-            self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
-            pygame.display.set_caption('Weather Station')
-        else:
-            self.screen = pygame.display.set_mode(
-                (self.WIDTH, self.HEIGHT),
-                pygame.FULLSCREEN | pygame.NOFRAME,
-            )
-
-        self.clock = pygame.time.Clock()
         self._load_fonts()
 
     def _load_fonts(self):
-        for name in ('DejaVuSansMono', 'FreeMono', 'LiberationMono', 'Courier', None):
-            try:
-                self.f_title = pygame.font.SysFont(name, 13, bold=True)
-                self.f_label = pygame.font.SysFont(name, 11)
-                self.f_value = pygame.font.SysFont(name, 27, bold=True)
-                self.f_small = pygame.font.SysFont(name, 10)
-                break
-            except Exception:
-                continue
+        self.f_title = _font(13, bold=True)
+        self.f_label = _font(11)
+        self.f_value = _font(27, bold=True)
+        self.f_small = _font(10)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def render(self, data: dict) -> bool:
-        """Draw one frame.  Returns False if the app should exit."""
-        self.screen.fill(self.C['bg'])
-        self._draw_header(data.get('timestamp'))
-        self._draw_sensors(data)
-        self._draw_gps(data)
-        self._draw_footer()
-        pygame.display.flip()
+    def render(self, data: dict):
+        """Draw one frame of weather data to the display."""
+        img = Image.new('RGB', (self.WIDTH, self.HEIGHT), C['bg'])
+        draw = ImageDraw.Draw(img)
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
-                return False
-        return True
+        self._draw_header(draw, data.get('timestamp'))
+        self._draw_sensors(draw, data)
+        self._draw_gps(draw, data)
+        self._draw_footer(draw)
 
-    def tick(self):
-        self.clock.tick(self.FPS)
+        self._device.display(img)
 
     def close(self):
-        pygame.quit()
+        if self._backlight:
+            self._backlight.off()
+        self._device.cleanup()
 
-    # ── Private drawing helpers ───────────────────────────────────────────────
+    # ── Drawing helpers ───────────────────────────────────────────────────────
 
-    def _draw_header(self, timestamp=None):
-        pygame.draw.rect(self.screen, self.C['header'], (0, 0, self.WIDTH, 26))
-        pygame.draw.line(self.screen, self.C['accent'], (0, 26), (self.WIDTH, 26), 1)
+    def _draw_header(self, draw: ImageDraw.ImageDraw, timestamp=None):
+        draw.rectangle([(0, 0), (self.WIDTH, 26)], fill=C['header'])
+        draw.line([(0, 26), (self.WIDTH, 26)], fill=C['accent'], width=1)
 
-        title = self.f_title.render('WEATHER STATION', True, self.C['accent'])
-        self.screen.blit(title, (self.WIDTH // 2 - title.get_width() // 2, 6))
+        title = 'WEATHER STATION'
+        tw = draw.textlength(title, font=self.f_title)
+        draw.text(((self.WIDTH - tw) / 2, 6), title, font=self.f_title, fill=C['accent'])
 
         if timestamp:
             ts_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
-            ts = self.f_small.render(ts_str, True, self.C['gray'])
-            self.screen.blit(ts, (self.WIDTH - ts.get_width() - 4, 30))
+            tw2 = draw.textlength(ts_str, font=self.f_small)
+            draw.text((self.WIDTH - tw2 - 4, 30), ts_str, font=self.f_small, fill=C['gray'])
 
-    def _draw_sensors(self, data):
+    def _draw_sensors(self, draw: ImageDraw.ImageDraw, data: dict):
         rows = [
             ('TEMPERATURE', data.get('temperature'), '{:.1f} °C', 'white'),
-            ('HUMIDITY',    data.get('humidity'),    '{:.1f} %',  'blue'),
-            ('PRESSURE',    data.get('pressure'),    '{:.1f} hPa','green'),
+            ('HUMIDITY',    data.get('humidity'),    '{:.1f} %',        'blue'),
+            ('PRESSURE',    data.get('pressure'),    '{:.1f} hPa',      'green'),
         ]
-
         y = 34
         for label, value, fmt, color_key in rows:
             y += 5
-            lbl = self.f_label.render(label, True, self.C['gray'])
-            self.screen.blit(lbl, (10, y))
+            draw.text((10, y), label, font=self.f_label, fill=C['gray'])
             y += 14
-
             if value is not None:
-                val_surf = self.f_value.render(fmt.format(value), True, self.C[color_key])
+                text = fmt.format(value)
+                color = C[color_key]
             else:
-                val_surf = self.f_value.render(fmt.format(0).replace('0', '-'), True, self.C['gray'])
-            self.screen.blit(val_surf, (10, y))
+                text = '---'
+                color = C['gray']
+            draw.text((10, y), text, font=self.f_value, fill=color)
             y += 32
+            draw.line([(8, y), (self.WIDTH - 8, y)], fill=C['divider'], width=1)
 
-            pygame.draw.line(self.screen, self.C['divider'], (8, y), (self.WIDTH - 8, y), 1)
-
-    def _draw_gps(self, data):
+    def _draw_gps(self, draw: ImageDraw.ImageDraw, data: dict):
         gps_y = 174
-        pygame.draw.rect(self.screen, self.C['header'],
-                         (0, gps_y, self.WIDTH, self.HEIGHT - gps_y - 16))
-        pygame.draw.line(self.screen, self.C['accent'],
-                         (0, gps_y), (self.WIDTH, gps_y), 1)
+        draw.rectangle([(0, gps_y), (self.WIDTH, self.HEIGHT - 16)], fill=C['header'])
+        draw.line([(0, gps_y), (self.WIDTH, gps_y)], fill=C['accent'], width=1)
 
         gps_fix   = data.get('gps_fix', False)
         latitude  = data.get('latitude')
         longitude = data.get('longitude')
         altitude  = data.get('altitude')
 
-        fix_color  = self.C['green'] if gps_fix else self.C['orange']
-        dot        = '●' if gps_fix else '○'
-        fix_text   = f'GPS {dot} {"FIX" if gps_fix else "SEARCHING..."}'
-        fix_surf   = self.f_label.render(fix_text, True, fix_color)
-        self.screen.blit(fix_surf, (10, gps_y + 5))
+        fix_color = C['green'] if gps_fix else C['orange']
+        dot       = '●' if gps_fix else '○'
+        fix_text  = f'GPS {dot} {"FIX" if gps_fix else "SEARCHING..."}'
+        draw.text((10, gps_y + 5), fix_text, font=self.f_label, fill=fix_color)
 
-        coord_color = self.C['white'] if gps_fix else self.C['gray']
+        coord_color = C['white'] if gps_fix else C['gray']
         y = gps_y + 20
 
         if latitude is not None:
-            ns  = 'N' if latitude >= 0 else 'S'
-            lat = self.f_small.render(f'LAT  {abs(latitude):9.5f}° {ns}', True, coord_color)
-            self.screen.blit(lat, (10, y))
+            ns = 'N' if latitude >= 0 else 'S'
+            draw.text((10, y), f'LAT  {abs(latitude):9.5f}° {ns}', font=self.f_small, fill=coord_color)
         y += 14
 
         if longitude is not None:
-            ew  = 'E' if longitude >= 0 else 'W'
-            lon = self.f_small.render(f'LON  {abs(longitude):9.5f}° {ew}', True, coord_color)
-            self.screen.blit(lon, (10, y))
+            ew = 'E' if longitude >= 0 else 'W'
+            draw.text((10, y), f'LON  {abs(longitude):9.5f}° {ew}', font=self.f_small, fill=coord_color)
         y += 14
 
         if altitude is not None:
-            alt = self.f_small.render(f'ALT  {altitude:.1f} m', True, coord_color)
-            self.screen.blit(alt, (10, y))
+            draw.text((10, y), f'ALT  {altitude:.1f} m', font=self.f_small, fill=coord_color)
 
-    def _draw_footer(self):
-        pygame.draw.line(self.screen, self.C['divider'],
-                         (0, self.HEIGHT - 16), (self.WIDTH, self.HEIGHT - 16), 1)
-        ver = self.f_small.render('Pi4 aarch64  ILI9341 240x320', True, self.C['gray'])
-        self.screen.blit(ver, (self.WIDTH // 2 - ver.get_width() // 2, self.HEIGHT - 13))
+    def _draw_footer(self, draw: ImageDraw.ImageDraw):
+        draw.line([(0, self.HEIGHT - 16), (self.WIDTH, self.HEIGHT - 16)], fill=C['divider'], width=1)
+        ver = 'Pi4 aarch64  ILI9341 240x320'
+        tw = draw.textlength(ver, font=self.f_small)
+        draw.text(((self.WIDTH - tw) / 2, self.HEIGHT - 13), ver, font=self.f_small, fill=C['gray'])

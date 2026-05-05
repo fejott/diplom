@@ -7,9 +7,9 @@ Usage (in main.py or a dedicated process):
 
     def get_data():
         return {
-            'temperature': bme280.temperature,
-            'humidity':    bme280.humidity,
-            'pressure':    bme280.pressure,
+            'temperature': bme280.temperature,   # °C
+            'humidity':    bme280.humidity,       # %
+            'pressure':    bme280.pressure,       # hPa
             'latitude':    gps.latitude,
             'longitude':   gps.longitude,
             'altitude':    gps.altitude,
@@ -17,11 +17,12 @@ Usage (in main.py or a dedicated process):
         }
 
     screen = WeatherScreen(data_source=get_data, update_interval=5.0)
-    screen.run()          # blocks; handles SIGINT/SIGTERM cleanly
+    screen.run()          # blocks; exits cleanly on Ctrl-C / SIGTERM
 
-Or update from another thread:
+Or push data from another thread:
+
     screen = WeatherScreen()
-    screen.update(temperature=22.5, humidity=60.0)
+    screen.update(temperature=22.5, humidity=60.0, pressure=1013.2)
     screen.run()
 """
 
@@ -33,11 +34,21 @@ from .tft_display import TFTDisplay
 
 
 class WeatherScreen:
-    def __init__(self, data_source=None, update_interval: float = 5.0,
-                 fb_device: str = '/dev/fb0'):
-        self._display         = TFTDisplay(fb_device=fb_device)
+    def __init__(self,
+                 data_source=None,
+                 update_interval: float = 5.0,
+                 refresh_rate: float = 1.0,
+                 **display_kwargs):
+        """
+        data_source      — callable that returns a sensor dict, or None
+        update_interval  — how often to call data_source (seconds)
+        refresh_rate     — how often to redraw (seconds); use 1.0 for weather
+        display_kwargs   — forwarded to TFTDisplay (spi_port, gpio_dc, ...)
+        """
+        self._display         = TFTDisplay(**display_kwargs)
         self._data_source     = data_source
         self._update_interval = update_interval
+        self._refresh_rate    = refresh_rate
         self._data: dict      = {}
         self._lock            = threading.Lock()
         self._running         = False
@@ -56,7 +67,8 @@ class WeatherScreen:
 
     def run(self):
         self._running = True
-        last_poll = 0.0
+        last_poll   = 0.0
+        last_render = 0.0
 
         try:
             while self._running:
@@ -66,14 +78,17 @@ class WeatherScreen:
                     self._poll()
                     last_poll = now
 
-                with self._lock:
-                    snapshot = dict(self._data)
-                snapshot['timestamp'] = time.time()
+                if (now - last_render) >= self._refresh_rate:
+                    with self._lock:
+                        snapshot = dict(self._data)
+                    snapshot['timestamp'] = time.time()
+                    try:
+                        self._display.render(snapshot)
+                    except Exception as e:
+                        print(f'[display] render error: {e}')
+                    last_render = now
 
-                if not self._display.render(snapshot):
-                    break
-
-                self._display.tick()
+                time.sleep(0.1)
         finally:
             self._display.close()
 
@@ -85,14 +100,14 @@ class WeatherScreen:
             if isinstance(fresh, dict):
                 with self._lock:
                     self._data.update(fresh)
-        except Exception:
-            pass  # keep showing last known data on transient sensor errors
+        except Exception as e:
+            print(f'[display] sensor poll error: {e}')
 
     def _stop(self, *_):
         self._running = False
 
 
-# ── Standalone test (run with: python -m display.weather_screen) ──────────────
+# ── Standalone test (run with: python3 -m display.weather_screen) ─────────────
 if __name__ == '__main__':
     import math
     t0 = time.time()
@@ -109,5 +124,6 @@ if __name__ == '__main__':
             'gps_fix':     (int(elapsed) % 30) > 8,
         }
 
+    print('Starting display test with synthetic sensor data. Ctrl-C to stop.')
     screen = WeatherScreen(data_source=synthetic_sensor, update_interval=2.0)
     screen.run()

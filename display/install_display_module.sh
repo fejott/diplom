@@ -1,7 +1,7 @@
 #!/bin/bash
 # install_display_module.sh
 # Copies the display module into ~/diplom/weather_station/display/
-# and installs pygame.
+# Run AFTER fix_and_build.sh (which installs luma.lcd).
 set -e
 
 WS_DIR="$HOME/diplom/weather_station"
@@ -16,23 +16,15 @@ if [ ! -d "$WS_DIR" ]; then
 fi
 
 mkdir -p "$DISPLAY_DIR"
-cp "$SCRIPT_DIR/display_module/__init__.py"      "$DISPLAY_DIR/"
-cp "$SCRIPT_DIR/display_module/tft_display.py"   "$DISPLAY_DIR/"
+cp "$SCRIPT_DIR/display_module/__init__.py"       "$DISPLAY_DIR/"
+cp "$SCRIPT_DIR/display_module/tft_display.py"    "$DISPLAY_DIR/"
 cp "$SCRIPT_DIR/display_module/weather_screen.py" "$DISPLAY_DIR/"
 
-echo "Files copied to $DISPLAY_DIR"
-
+echo "Files installed to $DISPLAY_DIR"
 echo ""
-echo "Installing pygame..."
-pip3 install --break-system-packages pygame 2>/dev/null \
-    || pip3 install pygame
-
+echo "Verify SPI device is present:"
+ls /dev/spidev* 2>/dev/null && echo "  SPI OK" || echo "  WARNING: /dev/spidev* not found — enable SPI and reboot"
 echo ""
-echo "Done. To test the display (fbcp-ili9341 must be running):"
+echo "Test the display:"
 echo "  cd $WS_DIR"
 echo "  python3 -m display.weather_screen"
-echo ""
-echo "To integrate into your main.py, add:"
-echo "  from display import WeatherScreen"
-echo "  screen = WeatherScreen(data_source=get_sensor_data, update_interval=5.0)"
-echo "  screen.run()"

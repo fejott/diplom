@@ -1,93 +1,65 @@
-# How to transfer and run on your Pi
+# Display setup — Pi 4 aarch64 Trixie + ILI9341
 
-## Step 1 — Copy files to the Pi
+## Why not fbcp-ili9341?
 
-From Windows PowerShell (replace `pi@raspberrypi.local` with your Pi's address):
+`fbcp-ili9341` captures the display using the **DispmanX API** (`vc_dispmanx_*`),
+which is part of the VideoCore userland.  That API was **removed from
+64-bit Raspberry Pi OS** — and `libraspberrypi-dev` is no longer in the
+Trixie package repos.  Recompiling won't help: the underlying library simply
+doesn't exist.
 
-```powershell
-# Copy all scripts and the display module
-scp fix_and_build.sh install_service.sh install_display_module.sh pi@raspberrypi.local:~/
-scp -r display_module pi@raspberrypi.local:~/
-```
-
-Or use WinSCP / VS Code Remote SSH — just drop the files in your home folder.
+The replacement is **luma.lcd**, a pure-Python ILI9341 driver that talks
+directly to `/dev/spidev0.0`.  No binary to build, no framebuffer service
+to keep running.
 
 ---
 
-## Step 2 — Fix and build fbcp-ili9341
+## Step 1 — Run the setup script on the Pi
 
-SSH into the Pi, then:
+The files are already in `~/diplom/display/` via your git pull.
 
 ```bash
-chmod +x fix_and_build.sh install_service.sh install_display_module.sh
+cd ~/diplom/display
 bash fix_and_build.sh
 ```
 
-Expected output:
-```
-[1/4] Installing dependencies...
-[2/4] Patching CMakeLists.txt for aarch64...
-  ✓ Fix 1: /opt/vc paths made conditional
-  ✓ Fix 2: 32-bit ARM flags wrapped in arch guard
-  ✓ Fix 3: aarch64 ARMv8-A fallback added
-[3/4] Running cmake + make...
-...
-[4/4] Done.
-  Binary: ~/fbcp-ili9341/build/fbcp-ili9341
-```
+This will:
+- Enable SPI in `/boot/firmware/config.txt`
+- Add you to the `spi` and `gpio` groups
+- Install `luma.lcd`, `lgpio`, `pillow`
 
-### If bcm_host is not found
+**Reboot afterwards** if SPI was just enabled:
 ```bash
-sudo apt-get install libraspberrypi-dev
-# if that fails on Bookworm:
-sudo apt-get install libpigpio-dev   # alternative
-```
-
-### Test the binary (display should light up, mirroring the framebuffer)
-```bash
-sudo ~/fbcp-ili9341/build/fbcp-ili9341
+sudo reboot
 ```
 
 ---
 
-## Step 3 — Set framebuffer resolution to 240×320
-
-Edit `/boot/firmware/config.txt` (Bookworm) or `/boot/config.txt` (Bullseye):
-
-```ini
-[all]
-hdmi_group=2
-hdmi_mode=87
-hdmi_cvt=240 320 60 1 0 0 0
-hdmi_force_hotplug=1
-```
-
-Then reboot.  After reboot, `fbset` should show `240x320`.
-
----
-
-## Step 4 — Install as a boot service
+## Step 2 — Install the display module
 
 ```bash
-bash install_service.sh
-```
-
----
-
-## Step 5 — Install the display module into the weather station
-
-```bash
+cd ~/diplom/display
 bash install_display_module.sh
 ```
 
-This copies `display/__init__.py`, `tft_display.py`, and `weather_screen.py`
-into `~/diplom/weather_station/display/` and installs pygame.
+Verify that `/dev/spidev0.0` exists before continuing.
 
 ---
 
-## Step 6 — Integrate with your weather station
+## Step 3 — Test
 
-In `~/diplom/weather_station/main.py` (adapt to match your sensor API):
+```bash
+cd ~/diplom/weather_station
+python3 -m display.weather_screen
+```
+
+You should see animated synthetic weather data on the TFT.  Ctrl-C to stop.
+
+---
+
+## Step 4 — Integrate with your weather station
+
+In `~/diplom/weather_station/main.py`:
 
 ```python
 from display import WeatherScreen
@@ -104,17 +76,19 @@ def get_sensor_data():
     }
 
 screen = WeatherScreen(data_source=get_sensor_data, update_interval=5.0)
-screen.run()  # blocks; Ctrl-C or SIGTERM exits cleanly
+screen.run()
 ```
 
-Or, if sensor reading runs in its own thread, push data manually:
+Or from a separate thread — call `screen.update(temperature=..., ...)` from
+your sensor loop and `screen.run()` from the main thread.
 
-```python
-screen = WeatherScreen()
-# from your sensor thread:
-screen.update(temperature=22.5, humidity=60.1, pressure=1013.0)
-# then in main thread:
-screen.run()
+---
+
+## Step 5 — Install as boot service (optional)
+
+```bash
+cd ~/diplom/display
+bash install_service.sh
 ```
 
 ---
@@ -123,8 +97,24 @@ screen.run()
 
 | Symptom | Fix |
 |---------|-----|
-| `bcm_host.h not found` | `sudo apt install libraspberrypi-dev` |
-| `bcm_host` link error | `sudo apt install libraspberrypi0` |
-| pygame: `no video device` | Make sure fbcp-ili9341 is running; also try `export SDL_VIDEODRIVER=fbcon SDL_FBDEV=/dev/fb0` |
-| Display all white/black | Try `-DSPI_BUS_CLOCK_DIVISOR=8` or `=10` (increase if 6 is too fast for your wiring) |
-| No GPIO access | Run with `sudo`, or add user to `gpio` group: `sudo usermod -aG gpio $USER` |
+| `/dev/spidev0.0` missing | Add `dtparam=spi=on` to `/boot/firmware/config.txt`, reboot |
+| `Permission denied /dev/spidev*` | `sudo usermod -aG spi $USER`, reboot |
+| `Cannot open GPIO` | `sudo usermod -aG gpio $USER`, reboot |
+| Display shows nothing / white | Check DC=GPIO24 RST=GPIO25; try `gpio_rst=None` if no reset wire |
+| `luma.lcd` import error | `pip install luma.lcd lgpio` (inside your venv) |
+| Garbled colors | Add `bgr_mode=True` to `ili9341(...)` constructor call in tft_display.py |
+
+---
+
+## Wiring reference
+
+| Display pin | Pi GPIO (BCM) | Pi physical pin |
+|-------------|--------------|-----------------|
+| VCC         | 3.3V         | 1               |
+| GND         | GND          | 6               |
+| CS          | GPIO 8 (CE0) | 24              |
+| RESET       | GPIO 25      | 22              |
+| DC/RS       | GPIO 24      | 18              |
+| SDI (MOSI)  | GPIO 10      | 19              |
+| SCK         | GPIO 11      | 23              |
+| LED (BL)    | GPIO 18      | 12              |
