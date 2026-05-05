@@ -5,3 +5,4 @@ pynmea2
 luma.lcd
 lgpio
 pillow
+evdev

@@ -5,6 +5,8 @@ Orchestrates sensor initialisation, the main polling loop, and clean
 shutdown.  Run with::
 
     python main.py [--interval N] [--no-tft]
+
+WiFi settings: press the button wired to GPIO 25 (physical pin 22).
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import threading
 from typing import Optional
 
 import config
@@ -27,6 +30,15 @@ try:
     _TFT_AVAILABLE = True
 except ImportError:
     _TFT_AVAILABLE = False
+
+try:
+    from display.wifi_screen import WiFiScreen
+    _WIFI_AVAILABLE = True
+except ImportError:
+    _WIFI_AVAILABLE = False
+
+# GPIO pin for the WiFi settings button (physical pin 22)
+_WIFI_BUTTON_GPIO = 25
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,8 +112,31 @@ def main() -> None:
         except Exception as exc:
             logger.warning("TFT display init failed (continuing without it): %s", exc)
 
+    # WiFi button — GPIO 25, physical pin 22, connect to GND
+    _wifi_requested = threading.Event()
+    wifi_button = None
+    if tft is not None and _WIFI_AVAILABLE:
+        try:
+            from gpiozero import Button
+            wifi_button = Button(_WIFI_BUTTON_GPIO, pull_up=True, bounce_time=0.1)
+            wifi_button.when_pressed = lambda: _wifi_requested.set()
+            logger.info("WiFi button active on GPIO %d.", _WIFI_BUTTON_GPIO)
+        except Exception as exc:
+            logger.warning("WiFi button setup failed: %s", exc)
+
     try:
         while True:
+            # Enter WiFi settings if button was pressed
+            if _wifi_requested.is_set() and tft is not None and _WIFI_AVAILABLE:
+                _wifi_requested.clear()
+                logger.info("Entering WiFi settings screen.")
+                try:
+                    wifi = WiFiScreen(tft)
+                    wifi.run()
+                except Exception as exc:
+                    logger.error("WiFi screen error: %s", exc)
+                continue
+
             gps_data: Optional[GpsData] = _safe_read_gps(gps) if gps_ok else None
 
             altitude_m: float = 0.0

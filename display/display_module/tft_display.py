@@ -122,6 +122,10 @@ class TFTDisplay:
 
         self._device.display(img)
 
+    def display_image(self, img: Image.Image):
+        """Push a pre-rendered PIL image directly to the display."""
+        self._device.display(img)
+
     def close(self):
         if self._backlight:
             self._backlight.off()

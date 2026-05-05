@@ -19,6 +19,7 @@ mkdir -p "$DISPLAY_DIR"
 cp "$SCRIPT_DIR/display_module/__init__.py"       "$DISPLAY_DIR/"
 cp "$SCRIPT_DIR/display_module/tft_display.py"    "$DISPLAY_DIR/"
 cp "$SCRIPT_DIR/display_module/weather_screen.py" "$DISPLAY_DIR/"
+cp "$SCRIPT_DIR/display_module/wifi_screen.py"    "$DISPLAY_DIR/"
 
 echo "Files installed to $DISPLAY_DIR"
 echo ""
