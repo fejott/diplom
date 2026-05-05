@@ -1,0 +1,4 @@
+smbus2
+RPi.bme280
+pyserial
+pynmea2
