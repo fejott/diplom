@@ -86,7 +86,9 @@ class TFTDisplay:
             gpio_RST=gpio_rst,
             reset_active_low=False,
         )
-        self._device = ili9341(self._serial, width=self.WIDTH, height=self.HEIGHT, rotate=0)
+        # luma.lcd 2.x only accepts ILI9341 in landscape (320×240); rotate=1
+        # makes luma rotate our portrait canvas internally.
+        self._device = ili9341(self._serial, width=320, height=240, rotate=1)
 
         # Backlight via gpiozero (works with lgpio on Trixie)
         self._backlight = None
