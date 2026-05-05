@@ -84,7 +84,7 @@ class TFTDisplay:
             device=spi_device,
             gpio_DC=gpio_dc,
             gpio_RST=gpio_rst,
-            reset_active_low=False,
+            reset_active_low=True,
         )
         # luma.lcd 2.x only accepts ILI9341 in landscape (320×240); rotate=1
         # makes luma rotate our portrait canvas internally.
