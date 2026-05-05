@@ -2,11 +2,11 @@
 ILI9341 240x320 TFT display driver using luma.lcd.
 
 Talks directly to the SPI device — no fbcp-ili9341 framebuffer service needed.
-Wiring assumed:
-  SPI0 CE0  (BCM 8/10/11)
-  DC   = GPIO 24
-  RST  = GPIO 25
-  BL   = GPIO 18  (backlight, active HIGH)
+Wiring (current physical layout):
+  SPI0 CE0  (BCM 8/10/11) = physical pins 24/19/23
+  DC   = GPIO 2  (physical 3)   ← shares I2C SDA, move to GPIO 24 (physical 18) when rewiring
+  RST  = GPIO 3  (physical 5)   ← shares I2C SCL, move to GPIO 25 (physical 22) when rewiring
+  BL   = GPIO 4  (physical 7)   (backlight, active HIGH)
 """
 
 import os
@@ -72,9 +72,9 @@ class TFTDisplay:
     def __init__(self,
                  spi_port: int = 0,
                  spi_device: int = 0,
-                 gpio_dc: int = 24,
-                 gpio_rst: int = 25,
-                 gpio_backlight: int = 18):
+                 gpio_dc: int = 2,
+                 gpio_rst: int = 3,
+                 gpio_backlight: int = 4):
 
         from luma.core.interface.serial import spi
         from luma.lcd.device import ili9341
