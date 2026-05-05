@@ -16,10 +16,10 @@ to keep running.
 
 ## Step 1 — Run the setup script on the Pi
 
-The files are already in `~/diplom/display/` via your git pull.
-
 ```bash
-cd ~/diplom/display
+cd ~/diplom
+git pull
+cd display
 bash fix_and_build.sh
 ```
 
@@ -42,11 +42,14 @@ cd ~/diplom/display
 bash install_display_module.sh
 ```
 
-Verify that `/dev/spidev0.0` exists before continuing.
+Verify that `/dev/spidev0.0` exists before continuing:
+```bash
+ls /dev/spidev*
+```
 
 ---
 
-## Step 3 — Test
+## Step 3 — Test with synthetic data
 
 ```bash
 cd ~/diplom/weather_station
@@ -57,38 +60,38 @@ You should see animated synthetic weather data on the TFT.  Ctrl-C to stop.
 
 ---
 
-## Step 4 — Integrate with your weather station
+## Step 4 — Run the full weather station
 
-In `~/diplom/weather_station/main.py`:
+`main.py` is already integrated with the TFT display.  It will automatically
+use the display if `luma.lcd` is available:
 
-```python
-from display import WeatherScreen
-
-def get_sensor_data():
-    return {
-        'temperature': bme280.temperature,   # °C
-        'humidity':    bme280.humidity,       # %
-        'pressure':    bme280.pressure,       # hPa
-        'latitude':    gps.latitude,
-        'longitude':   gps.longitude,
-        'altitude':    gps.altitude,
-        'gps_fix':     gps.has_fix,
-    }
-
-screen = WeatherScreen(data_source=get_sensor_data, update_interval=5.0)
-screen.run()
+```bash
+cd ~/diplom/weather_station
+python3 main.py
 ```
 
-Or from a separate thread — call `screen.update(temperature=..., ...)` from
-your sensor loop and `screen.run()` from the main thread.
+Both the terminal and the TFT display will update every 5 seconds.
+To run without the TFT (terminal only):
+
+```bash
+python3 main.py --no-tft
+```
 
 ---
 
-## Step 5 — Install as boot service (optional)
+## Step 5 — Install as a boot service
 
 ```bash
 cd ~/diplom/display
 bash install_service.sh
+```
+
+This creates `/etc/systemd/system/weather-station.service` which runs
+`main.py` on boot (terminal + TFT display together).
+
+```bash
+sudo systemctl status weather-station
+journalctl -u weather-station -f
 ```
 
 ---
@@ -101,8 +104,9 @@ bash install_service.sh
 | `Permission denied /dev/spidev*` | `sudo usermod -aG spi $USER`, reboot |
 | `Cannot open GPIO` | `sudo usermod -aG gpio $USER`, reboot |
 | Display shows nothing / white | Check DC=GPIO24 RST=GPIO25; try `gpio_rst=None` if no reset wire |
-| `luma.lcd` import error | `pip install luma.lcd lgpio` (inside your venv) |
-| Garbled colors | Add `bgr_mode=True` to `ili9341(...)` constructor call in tft_display.py |
+| `luma.lcd` import error | `pip install luma.lcd lgpio pillow` (inside your venv) |
+| Garbled colors | Add `bgr_mode=True` to `ili9341(...)` in `display/tft_display.py` |
+| TFT works, terminal blank | Run `python3 main.py --no-tft` to confirm sensors work without display |
 
 ---
 

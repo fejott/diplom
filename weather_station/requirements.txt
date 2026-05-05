@@ -2,3 +2,6 @@ smbus2
 RPi.bme280
 pyserial
 pynmea2
+luma.lcd
+lgpio
+pillow
