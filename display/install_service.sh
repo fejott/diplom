@@ -9,7 +9,7 @@ SERVICE_FILE=/etc/systemd/system/weather-station.service
 
 # Find the right Python (prefer venv)
 PYTHON="python3"
-for CANDIDATE in "$HOME/diplom/venv/bin/python3" "$HOME/venv/bin/python3"; do
+for CANDIDATE in "$WS_DIR/venv/bin/python3" "$HOME/diplom/venv/bin/python3" "$HOME/venv/bin/python3"; do
     [ -f "$CANDIDATE" ] && PYTHON="$CANDIDATE" && break
 done
 
