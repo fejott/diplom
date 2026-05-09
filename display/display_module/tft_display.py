@@ -12,8 +12,8 @@ Layout (portrait 240×320):
   0–26   header bar  "WEATHER STATION"
   26–38  timestamp
   38–143 sensors  (TEMP / HUM / PRESSURE, 35 px each)
-  143–210 GPS section
-  210–308 Forecast section
+  143–195 GPS section  (compact: 52 px)
+  195–308 Forecast section  (113 px — fits online API + precip line)
   308–320 footer
 """
 
@@ -59,6 +59,7 @@ C = {
     'blue':    (80,  150, 255),
     'divider': (30,  45,  80),
     'purple':  (160, 100, 255),
+    'cyan':    (0,   210, 175),   # online API indicator
 }
 
 
@@ -181,7 +182,7 @@ class TFTDisplay:
         # y ends at 143
 
     def _draw_gps(self, draw: ImageDraw.ImageDraw, data: dict) -> None:
-        """GPS section.  Occupies y 143–210."""
+        """GPS section.  Occupies y 143–195 (compact)."""
         W    = self.WIDTH
         top  = 143
         draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
@@ -192,32 +193,35 @@ class TFTDisplay:
         longitude = data.get('longitude')
         altitude  = data.get('altitude')
 
-        fix_col  = C['green']  if gps_fix else C['orange']
+        fix_col  = C['green'] if gps_fix else C['orange']
         dot      = '●' if gps_fix else '○'
         fix_text = f'GPS {dot} {"FIX" if gps_fix else "SEARCHING..."}'
         draw.text((10, top + 2), fix_text, font=self.f_label, fill=fix_col)
 
-        ccol = C['white'] if gps_fix else C['gray']
         y    = top + 17
-        if latitude is not None:
-            ns = 'N' if latitude >= 0 else 'S'
-            draw.text((10, y), f'LAT  {abs(latitude):9.5f}° {ns}',
-                      font=self.f_tiny, fill=ccol)
-        y += 13
-        if longitude is not None:
+        ccol = C['white'] if gps_fix else C['gray']
+
+        if gps_fix and latitude is not None and longitude is not None:
+            ns = 'N' if latitude  >= 0 else 'S'
             ew = 'E' if longitude >= 0 else 'W'
-            draw.text((10, y), f'LON  {abs(longitude):9.5f}° {ew}',
+            # Lat + lon on one line to save vertical space
+            draw.text((10, y),
+                      f'{abs(latitude):.4f}°{ns}  {abs(longitude):.4f}°{ew}',
                       font=self.f_tiny, fill=ccol)
-        y += 13
-        if altitude is not None:
-            draw.text((10, y), f'ALT  {altitude:.1f} m',
-                      font=self.f_tiny, fill=ccol)
-        # bottom of GPS ≈ 210
+            y += 13
+            if altitude is not None:
+                draw.text((10, y), f'ALT {altitude:.0f} m',
+                          font=self.f_tiny, fill=ccol)
+        else:
+            draw.text((10, y), 'Ожидание сигнала...', font=self.f_tiny, fill=C['gray'])
+
+        # Bottom divider — forecast starts below here
+        draw.line([(0, 195), (W, 195)], fill=C['divider'], width=1)
 
     def _draw_forecast(self, draw: ImageDraw.ImageDraw, forecast, data_count: int) -> None:
-        """Forecast section.  Occupies y 210–308."""
+        """Forecast section.  Occupies y 195–308 (113 px)."""
         W   = self.WIDTH
-        top = 210
+        top = 195
         draw.line([(0, top), (W, top)], fill=C['accent'], width=1)
         draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
 
@@ -226,10 +230,34 @@ class TFTDisplay:
             draw.text((10, top + 18), 'Нет данных', font=self.f_small, fill=C['gray'])
             return
 
-        method = forecast.method
+        method   = forecast.method
+        precip   = getattr(forecast, 'precip_probability', None)
+        internet = getattr(forecast, 'internet_available', None)
+        gps_used = getattr(forecast, 'gps_used', False)
 
-        if method == 'lstm':
-            draw.text((10, top + 2), '🔮 ПРОГНОЗ  LSTM', font=self.f_label, fill=C['purple'])
+        if method == 'online_api':
+            draw.text((10, top + 2), '🌐 Online API', font=self.f_label, fill=C['cyan'])
+            y = top + 17
+            draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
+            y += 13
+            if precip is not None:
+                draw.text((10, y), f'Осадки: {precip:.0f}%',
+                          font=self.f_tiny, fill=C['blue'])
+                y += 13
+            if forecast.temp_in_1h is not None:
+                draw.text((10, y),
+                          f'+1ч:{forecast.temp_in_1h:.1f}°  '
+                          f'+2ч:{forecast.temp_in_2h:.1f}°  '
+                          f'+3ч:{forecast.temp_in_3h:.1f}°',
+                          font=self.f_tiny, fill=C['white'])
+                y += 13
+            draw.text((10, y),
+                      f'Точность: {forecast.confidence * 100:.0f}%  '
+                      f'До {forecast.valid_until.strftime("%H:%M")}',
+                      font=self.f_tiny, fill=C['gray'])
+
+        elif method == 'lstm':
+            draw.text((10, top + 2), '🤖 Авт. LSTM', font=self.f_label, fill=C['purple'])
             y = top + 17
             draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
             y += 13
@@ -244,14 +272,20 @@ class TFTDisplay:
                           f'+2ч:{forecast.temp_in_2h:.1f}°  '
                           f'+3ч:{forecast.temp_in_3h:.1f}°',
                           font=self.f_tiny, fill=C['white'])
-            y += 13
+                y += 13
             draw.text((10, y),
                       f'Точность: {forecast.confidence * 100:.0f}%  '
                       f'До {forecast.valid_until.strftime("%H:%M")}',
                       font=self.f_tiny, fill=C['gray'])
 
         elif method == 'rule-based':
-            draw.text((10, top + 2), '🔮 ПРОГНОЗ  правила', font=self.f_label, fill=C['purple'])
+            if internet is False:
+                subtitle = '📡 Правила: нет сети'
+            elif not gps_used:
+                subtitle = '📡 Правила: нет GPS'
+            else:
+                subtitle = '📡 Правила'
+            draw.text((10, top + 2), subtitle, font=self.f_label, fill=C['orange'])
             y = top + 17
             draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
             y += 13
@@ -265,11 +299,11 @@ class TFTDisplay:
                 min_r = config.FORECAST_MIN_READINGS
             except Exception:
                 min_r = 500
-            draw.text((10, y), f'Сбор данных: {data_count}/{min_r}',
+            draw.text((10, y), f'Сбор: {data_count}/{min_r}',
                       font=self.f_tiny, fill=C['gray'])
 
         else:  # insufficient_data
-            draw.text((10, top + 2), '🔮 ПРОГНОЗ', font=self.f_label, fill=C['purple'])
+            draw.text((10, top + 2), '📡 ПРОГНОЗ', font=self.f_label, fill=C['orange'])
             y = top + 17
             try:
                 import config
