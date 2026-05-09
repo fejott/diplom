@@ -7,15 +7,24 @@ Wiring:
   DC   = GPIO 24 (physical 18)
   RST  = GPIO 23 (physical 16)
   BL   = GPIO 4  (physical 7)   (backlight, active HIGH)
+
+Layout (portrait 240×320):
+  0–26   header bar  "WEATHER STATION"
+  26–38  timestamp
+  38–143 sensors  (TEMP / HUM / PRESSURE, 35 px each)
+  143–210 GPS section
+  210–308 Forecast section
+  308–320 footer
 """
 
-import os
 import time
 from datetime import datetime
+from typing import Optional
+
 from PIL import Image, ImageDraw, ImageFont
 
 
-# ── Font helpers ──────────────────────────────────────────────────────────────
+# ── Font helpers ───────────────────────────────────────────────────────────────
 
 _FONT_PATHS = [
     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono{suffix}.ttf',
@@ -23,11 +32,13 @@ _FONT_PATHS = [
     '/usr/share/fonts/truetype/freefont/FreeMono{suffix}.ttf',
 ]
 
+
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     suffix = 'Bold' if bold else ''
     suffix2 = 'Bold' if bold else 'Regular'
     for pattern in _FONT_PATHS:
-        path = pattern.format(suffix=suffix) if '{}' not in pattern else pattern.format(suffix=suffix2)
+        path = pattern.format(suffix=suffix) if '{}' not in pattern \
+               else pattern.format(suffix=suffix2)
         try:
             return ImageFont.truetype(path, size)
         except OSError:
@@ -35,7 +46,7 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-# ── Colour palette ────────────────────────────────────────────────────────────
+# ── Colour palette ─────────────────────────────────────────────────────────────
 
 C = {
     'bg':      (10,  15,  30),
@@ -47,14 +58,15 @@ C = {
     'orange':  (255, 165,  50),
     'blue':    (80,  150, 255),
     'divider': (30,  45,  80),
+    'purple':  (160, 100, 255),
 }
 
 
-# ── Display class ─────────────────────────────────────────────────────────────
+# ── Display class ──────────────────────────────────────────────────────────────
 
 class TFTDisplay:
     """
-    Renders weather data to an ILI9341 240x320 TFT via luma.lcd.
+    Renders weather + GPS + forecast to an ILI9341 240×320 TFT via luma.lcd.
 
     Usage:
         display = TFTDisplay()
@@ -62,6 +74,8 @@ class TFTDisplay:
             'temperature': 22.5, 'humidity': 60.0, 'pressure': 1013.0,
             'latitude': 55.75, 'longitude': 37.61, 'altitude': 155.0,
             'gps_fix': True, 'timestamp': time.time(),
+            'forecast': forecast_result,   # ForecastResult or None
+            'data_count': 142,             # rows collected so far
         })
         display.close()
     """
@@ -90,7 +104,6 @@ class TFTDisplay:
         # makes luma rotate our portrait canvas internally.
         self._device = ili9341(self._serial, width=320, height=240, rotate=1)
 
-        # Backlight via gpiozero (works with lgpio on Trixie)
         self._backlight = None
         if gpio_backlight is not None:
             try:
@@ -98,108 +111,177 @@ class TFTDisplay:
                 self._backlight = LED(gpio_backlight)
                 self._backlight.on()
             except Exception:
-                pass  # backlight will stay on via hardware pull-up on some boards
+                pass
 
         self._load_fonts()
 
-    def _load_fonts(self):
+    def _load_fonts(self) -> None:
         self.f_title = _font(13, bold=True)
-        self.f_label = _font(11)
-        self.f_value = _font(27, bold=True)
+        self.f_label = _font(10)
+        self.f_value = _font(18, bold=True)
         self.f_small = _font(10)
+        self.f_tiny  = _font(9)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ─────────────────────────────────────────────────────────────
 
-    def render(self, data: dict):
-        """Draw one frame of weather data to the display."""
-        img = Image.new('RGB', (self.WIDTH, self.HEIGHT), C['bg'])
+    def render(self, data: dict) -> None:
+        """Draw one full frame from sensor + forecast data."""
+        img  = Image.new('RGB', (self.WIDTH, self.HEIGHT), C['bg'])
         draw = ImageDraw.Draw(img)
 
         self._draw_header(draw, data.get('timestamp'))
         self._draw_sensors(draw, data)
         self._draw_gps(draw, data)
+        self._draw_forecast(draw, data.get('forecast'), data.get('data_count', 0))
         self._draw_footer(draw)
 
         self._device.display(img)
 
-    def display_image(self, img: Image.Image):
+    def display_image(self, img: Image.Image) -> None:
         """Push a pre-rendered PIL image directly to the display."""
         self._device.display(img)
 
-    def close(self):
+    def close(self) -> None:
         if self._backlight:
             self._backlight.off()
         self._device.cleanup()
 
-    # ── Drawing helpers ───────────────────────────────────────────────────────
+    # ── Section renderers ──────────────────────────────────────────────────────
 
-    def _draw_header(self, draw: ImageDraw.ImageDraw, timestamp=None):
-        draw.rectangle([(0, 0), (self.WIDTH, 26)], fill=C['header'])
-        draw.line([(0, 26), (self.WIDTH, 26)], fill=C['accent'], width=1)
+    def _draw_header(self, draw: ImageDraw.ImageDraw, timestamp: Optional[float]) -> None:
+        """Top bar with title and timestamp.  Occupies y 0–38."""
+        W = self.WIDTH
+        draw.rectangle([(0, 0), (W, 26)], fill=C['header'])
+        draw.line([(0, 26), (W, 26)], fill=C['accent'], width=1)
 
         title = 'WEATHER STATION'
         tw = draw.textlength(title, font=self.f_title)
-        draw.text(((self.WIDTH - tw) / 2, 6), title, font=self.f_title, fill=C['accent'])
+        draw.text(((W - tw) / 2, 5), title, font=self.f_title, fill=C['accent'])
 
         if timestamp:
-            ts_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
-            tw2 = draw.textlength(ts_str, font=self.f_small)
-            draw.text((self.WIDTH - tw2 - 4, 30), ts_str, font=self.f_small, fill=C['gray'])
+            ts = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
+            tw2 = draw.textlength(ts, font=self.f_tiny)
+            draw.text((W - tw2 - 4, 28), ts, font=self.f_tiny, fill=C['gray'])
 
-    def _draw_sensors(self, draw: ImageDraw.ImageDraw, data: dict):
+    def _draw_sensors(self, draw: ImageDraw.ImageDraw, data: dict) -> None:
+        """Three sensor rows.  Occupies y 38–143."""
         rows = [
-            ('TEMPERATURE', data.get('temperature'), '{:.1f} °C', 'white'),
-            ('HUMIDITY',    data.get('humidity'),    '{:.1f} %',        'blue'),
-            ('PRESSURE',    data.get('pressure'),    '{:.1f} hPa',      'green'),
+            ('TEMPERATURE', data.get('temperature'), '{:.1f} °C',  'white'),
+            ('HUMIDITY',    data.get('humidity'),    '{:.1f} %',   'blue'),
+            ('PRESSURE',    data.get('pressure'),    '{:.1f} hPa', 'green'),
         ]
-        y = 34
-        for label, value, fmt, color_key in rows:
-            y += 5
-            draw.text((10, y), label, font=self.f_label, fill=C['gray'])
-            y += 14
-            if value is not None:
-                text = fmt.format(value)
-                color = C[color_key]
-            else:
-                text = '---'
-                color = C['gray']
-            draw.text((10, y), text, font=self.f_value, fill=color)
-            y += 32
+        y = 38
+        for label, value, fmt, col_key in rows:
+            draw.text((10, y + 2), label, font=self.f_label, fill=C['gray'])
+            text  = fmt.format(value) if value is not None else '---'
+            color = C[col_key]       if value is not None else C['gray']
+            draw.text((10, y + 14), text, font=self.f_value, fill=color)
+            y += 35
             draw.line([(8, y), (self.WIDTH - 8, y)], fill=C['divider'], width=1)
+        # y ends at 143
 
-    def _draw_gps(self, draw: ImageDraw.ImageDraw, data: dict):
-        gps_y = 174
-        draw.rectangle([(0, gps_y), (self.WIDTH, self.HEIGHT - 16)], fill=C['header'])
-        draw.line([(0, gps_y), (self.WIDTH, gps_y)], fill=C['accent'], width=1)
+    def _draw_gps(self, draw: ImageDraw.ImageDraw, data: dict) -> None:
+        """GPS section.  Occupies y 143–210."""
+        W    = self.WIDTH
+        top  = 143
+        draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
+        draw.line([(0, top), (W, top)], fill=C['accent'], width=1)
 
         gps_fix   = data.get('gps_fix', False)
         latitude  = data.get('latitude')
         longitude = data.get('longitude')
         altitude  = data.get('altitude')
 
-        fix_color = C['green'] if gps_fix else C['orange']
-        dot       = '●' if gps_fix else '○'
-        fix_text  = f'GPS {dot} {"FIX" if gps_fix else "SEARCHING..."}'
-        draw.text((10, gps_y + 5), fix_text, font=self.f_label, fill=fix_color)
+        fix_col  = C['green']  if gps_fix else C['orange']
+        dot      = '●' if gps_fix else '○'
+        fix_text = f'GPS {dot} {"FIX" if gps_fix else "SEARCHING..."}'
+        draw.text((10, top + 2), fix_text, font=self.f_label, fill=fix_col)
 
-        coord_color = C['white'] if gps_fix else C['gray']
-        y = gps_y + 20
-
+        ccol = C['white'] if gps_fix else C['gray']
+        y    = top + 17
         if latitude is not None:
             ns = 'N' if latitude >= 0 else 'S'
-            draw.text((10, y), f'LAT  {abs(latitude):9.5f}° {ns}', font=self.f_small, fill=coord_color)
-        y += 14
-
+            draw.text((10, y), f'LAT  {abs(latitude):9.5f}° {ns}',
+                      font=self.f_tiny, fill=ccol)
+        y += 13
         if longitude is not None:
             ew = 'E' if longitude >= 0 else 'W'
-            draw.text((10, y), f'LON  {abs(longitude):9.5f}° {ew}', font=self.f_small, fill=coord_color)
-        y += 14
-
+            draw.text((10, y), f'LON  {abs(longitude):9.5f}° {ew}',
+                      font=self.f_tiny, fill=ccol)
+        y += 13
         if altitude is not None:
-            draw.text((10, y), f'ALT  {altitude:.1f} m', font=self.f_small, fill=coord_color)
+            draw.text((10, y), f'ALT  {altitude:.1f} m',
+                      font=self.f_tiny, fill=ccol)
+        # bottom of GPS ≈ 210
 
-    def _draw_footer(self, draw: ImageDraw.ImageDraw):
-        draw.line([(0, self.HEIGHT - 16), (self.WIDTH, self.HEIGHT - 16)], fill=C['divider'], width=1)
-        ver = 'Pi4 aarch64  ILI9341 240x320'
-        tw = draw.textlength(ver, font=self.f_small)
-        draw.text(((self.WIDTH - tw) / 2, self.HEIGHT - 13), ver, font=self.f_small, fill=C['gray'])
+    def _draw_forecast(self, draw: ImageDraw.ImageDraw, forecast, data_count: int) -> None:
+        """Forecast section.  Occupies y 210–308."""
+        W   = self.WIDTH
+        top = 210
+        draw.line([(0, top), (W, top)], fill=C['accent'], width=1)
+        draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
+
+        if forecast is None:
+            draw.text((10, top + 2), '🔮 ПРОГНОЗ', font=self.f_label, fill=C['purple'])
+            draw.text((10, top + 18), 'Нет данных', font=self.f_small, fill=C['gray'])
+            return
+
+        method = forecast.method
+
+        if method == 'lstm':
+            draw.text((10, top + 2), '🔮 ПРОГНОЗ  LSTM', font=self.f_label, fill=C['purple'])
+            y = top + 17
+            draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
+            y += 13
+            trend = forecast.pressure_trend
+            arrow = '▲' if trend >= 0 else '▼'
+            draw.text((10, y), f'Давл: {arrow}{abs(trend):.1f} hPa',
+                      font=self.f_tiny, fill=C['blue'])
+            y += 13
+            if forecast.temp_in_1h is not None:
+                draw.text((10, y),
+                          f'+1ч:{forecast.temp_in_1h:.1f}°  '
+                          f'+2ч:{forecast.temp_in_2h:.1f}°  '
+                          f'+3ч:{forecast.temp_in_3h:.1f}°',
+                          font=self.f_tiny, fill=C['white'])
+            y += 13
+            draw.text((10, y),
+                      f'Точность: {forecast.confidence * 100:.0f}%  '
+                      f'До {forecast.valid_until.strftime("%H:%M")}',
+                      font=self.f_tiny, fill=C['gray'])
+
+        elif method == 'rule-based':
+            draw.text((10, top + 2), '🔮 ПРОГНОЗ  правила', font=self.f_label, fill=C['purple'])
+            y = top + 17
+            draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
+            y += 13
+            trend = forecast.pressure_trend
+            arrow = '▲' if trend >= 0 else '▼'
+            draw.text((10, y), f'Давл: {arrow}{abs(trend):.1f} hPa/ч',
+                      font=self.f_tiny, fill=C['blue'])
+            y += 13
+            try:
+                import config
+                min_r = config.FORECAST_MIN_READINGS
+            except Exception:
+                min_r = 500
+            draw.text((10, y), f'Сбор данных: {data_count}/{min_r}',
+                      font=self.f_tiny, fill=C['gray'])
+
+        else:  # insufficient_data
+            draw.text((10, top + 2), '🔮 ПРОГНОЗ', font=self.f_label, fill=C['purple'])
+            y = top + 17
+            try:
+                import config
+                min_r = config.FORECAST_MIN_READINGS
+            except Exception:
+                min_r = 500
+            draw.text((10, y), f'Сбор данных: {data_count}/{min_r}',
+                      font=self.f_tiny, fill=C['gray'])
+
+    def _draw_footer(self, draw: ImageDraw.ImageDraw) -> None:
+        """Thin footer bar at the very bottom.  Occupies y 308–320."""
+        draw.line([(0, 308), (self.WIDTH, 308)], fill=C['divider'], width=1)
+        ver = 'ILI9341  Pi4 aarch64'
+        tw  = draw.textlength(ver, font=self.f_tiny)
+        draw.text(((self.WIDTH - tw) / 2, 310), ver, font=self.f_tiny, fill=C['divider'])

@@ -197,6 +197,8 @@ def main() -> None:
                     'altitude':    gps_data.altitude        if gps_data else None,
                     'gps_fix':     gps_data.fix             if gps_data else False,
                     'timestamp':   time.time(),
+                    'forecast':    forecast,
+                    'data_count':  data_count,
                 }
                 try:
                     tft.render(tft_data)
