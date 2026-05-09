@@ -219,7 +219,64 @@ class LSTMForecaster:
         model    = self._build_and_train_keras(X_tr, y_tr, X_v, y_v)
         val_loss = float(model.evaluate(X_v, y_v, verbose=0))
         self._last_val_loss = val_loss
-        logger.info("LSTM training done. val_loss=%.4f", val_loss)
+
+        # ── Compute RMSE, MAE, precision/recall on validation set ─────────────
+        y_pred = model.predict(X_v, verbose=0)
+
+        n_steps     = len(config.FORECAST_STEPS)
+        s_min_tiled = np.tile(s_min, n_steps)
+        rng_tiled   = np.tile(rng,   n_steps)
+
+        y_pred_d = y_pred * rng_tiled + s_min_tiled   # denormalised predictions
+        y_v_d    = y_v    * rng_tiled + s_min_tiled   # denormalised actuals
+
+        # Per-step RMSE and MAE for temperature (col 0) and pressure (col 2)
+        step_labels = ['1h', '2h', '3h']
+        metrics: Dict[str, float] = {'val_loss': val_loss}
+        for i, label in enumerate(step_labels[:n_steps]):
+            pred_t = y_pred_d[:, i * 3 + 0];  true_t = y_v_d[:, i * 3 + 0]
+            pred_p = y_pred_d[:, i * 3 + 2];  true_p = y_v_d[:, i * 3 + 2]
+            metrics[f'rmse_temp_{label}'] = float(np.sqrt(np.mean((pred_t - true_t) ** 2)))
+            metrics[f'mae_temp_{label}']  = float(np.mean(np.abs(pred_t - true_t)))
+            metrics[f'rmse_pres_{label}'] = float(np.sqrt(np.mean((pred_p - true_p) ** 2)))
+            metrics[f'mae_pres_{label}']  = float(np.mean(np.abs(pred_p - true_p)))
+
+        # Pressure trend direction: binary classification (rising vs falling)
+        pres_current  = X_v[:, -1, 2] * rng[2] + s_min[2]
+        pres_pred_end = y_pred_d[:, (n_steps - 1) * 3 + 2]
+        pres_true_end = y_v_d[:,   (n_steps - 1) * 3 + 2]
+
+        pred_rising = (pres_pred_end > pres_current).astype(np.int8)
+        true_rising = (pres_true_end > pres_current).astype(np.int8)
+
+        tp = int(np.sum((pred_rising == 1) & (true_rising == 1)))
+        fp = int(np.sum((pred_rising == 1) & (true_rising == 0)))
+        fn = int(np.sum((pred_rising == 0) & (true_rising == 1)))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1        = (2 * precision * recall / (precision + recall)
+                     if (precision + recall) > 0 else 0.0)
+        metrics.update({'precision': precision, 'recall': recall, 'f1': f1,
+                        'tp': tp, 'fp': fp, 'fn': fn})
+
+        # Save metrics to disk
+        try:
+            os.makedirs(os.path.dirname(config.METRICS_PATH) or '.', exist_ok=True)
+            with open(config.METRICS_PATH, 'w') as fh:
+                json.dump(metrics, fh, indent=2)
+        except Exception as exc:
+            logger.warning("Could not save metrics file: %s", exc)
+
+        logger.info(
+            "LSTM training done — val_loss=%.4f | "
+            "RMSE T/P (1h): %.2f°C / %.2f hPa | "
+            "MAE T/P (1h): %.2f°C / %.2f hPa | "
+            "precision=%.2f  recall=%.2f  F1=%.2f",
+            val_loss,
+            metrics.get('rmse_temp_1h', 0), metrics.get('rmse_pres_1h', 0),
+            metrics.get('mae_temp_1h',  0), metrics.get('mae_pres_1h',  0),
+            precision, recall, f1,
+        )
 
         # Export to TFLite
         os.makedirs(os.path.dirname(config.MODEL_PATH) or '.', exist_ok=True)
@@ -232,7 +289,7 @@ class LSTMForecaster:
         with self._lock:
             self._interpreter = _load_tflite_interpreter(config.MODEL_PATH)
 
-        return {'val_loss': val_loss}
+        return metrics
 
     def save_model(self, path: str) -> None:
         """Copy the current TFLite model file to *path*."""

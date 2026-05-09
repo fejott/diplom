@@ -25,6 +25,7 @@ LOG_BACKUP_COUNT: int = 3
 DB_PATH: str = "weather_history.db"
 MODEL_PATH: str = "forecasting/lstm_model.tflite"
 SCALER_PATH: str = "forecasting/scaler_params.json"
+METRICS_PATH: str = "forecasting/metrics.json"
 
 # Forecasting — LSTM
 SEQUENCE_LENGTH: int = 72           # number of readings fed to the model
