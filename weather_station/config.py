@@ -38,3 +38,10 @@ MAX_RAM_MB: int = 400
 # Forecasting — retraining schedule
 LSTM_RETRAIN_INTERVAL: int = 3600   # seconds between retrains
 RETRAIN_THRESHOLD: int = 100        # new readings needed to trigger a retrain
+
+# Online / hybrid forecasting
+INTERNET_CHECK_URL: str      = "https://api.open-meteo.com"
+INTERNET_CHECK_TIMEOUT: int  = 3     # seconds
+INTERNET_CHECK_CACHE_SEC: int = 60  # cache availability result for N seconds
+API_FORECAST_HOURS: int      = 3    # hours ahead to request from Open-Meteo
+OPEN_METEO_BASE_URL: str     = "https://api.open-meteo.com/v1/forecast"

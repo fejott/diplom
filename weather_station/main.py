@@ -20,6 +20,7 @@ from typing import Optional
 import config
 from display.terminal_display import display as terminal_display
 from forecasting import DataStore, LSTMForecaster, RuleForecaster
+from forecasting import HybridForecaster, correct_pressure_to_sea_level
 from forecasting.forecast_result import ForecastResult
 from sensors.bme280_sensor import BME280Sensor, WeatherData
 from sensors.gps_sensor import GPSSensor, GpsData
@@ -106,10 +107,10 @@ def main() -> None:
         sys.exit(1)
 
     # ── Forecasting ───────────────────────────────────────────────────────────
-    data_store     = DataStore()
-    rule_forecaster = RuleForecaster()
+    data_store      = DataStore()
     lstm_forecaster = LSTMForecaster(data_store)
-    _lstm_was_ready = False  # track first transition for logging
+    rule_forecaster = RuleForecaster()
+    hybrid          = HybridForecaster(data_store, lstm_forecaster, rule_forecaster)
 
     # ── TFT display ───────────────────────────────────────────────────────────
     tft: Optional[TFTDisplay] = None
@@ -155,6 +156,18 @@ def main() -> None:
                 _safe_read_weather(bme, altitude_m) if bme_ok else None
             )
 
+            # Correct sea-level pressure explicitly from GPS altitude
+            if (weather_data is not None
+                    and gps_data is not None
+                    and gps_data.fix
+                    and gps_data.altitude):
+                weather_data.pressure_sl = round(
+                    correct_pressure_to_sea_level(
+                        weather_data.pressure, gps_data.altitude
+                    ),
+                    2,
+                )
+
             # Persist reading
             if weather_data is not None:
                 try:
@@ -162,24 +175,16 @@ def main() -> None:
                 except Exception as exc:
                     logger.error("DataStore.save error: %s", exc)
 
-            # Forecast
+            # Forecast (hybrid: online API → LSTM → rules)
             forecast: Optional[ForecastResult] = None
+            data_count: int = 0
             try:
                 data_count = data_store.count()
-                if lstm_forecaster.is_ready():
-                    if not _lstm_was_ready:
-                        logger.info("Switching to LSTM forecast.")
-                        _lstm_was_ready = True
-                    forecast = lstm_forecaster.predict(
-                        data_store.get_last_n(config.SEQUENCE_LENGTH)
-                    )
-                    lstm_forecaster._retrain_if_needed()
-                else:
-                    forecast = rule_forecaster.predict(
-                        data_store.get_last_n(60)
-                    )
-                    # Trigger initial training in background
-                    lstm_forecaster._retrain_if_needed()
+                forecast   = hybrid.predict(
+                    gps_data,
+                    data_store.get_last_n(config.SEQUENCE_LENGTH),
+                )
+                lstm_forecaster._retrain_if_needed()
             except Exception as exc:
                 logger.error("Forecast error: %s", exc)
 

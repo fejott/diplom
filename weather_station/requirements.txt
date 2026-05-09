@@ -9,3 +9,5 @@ evdev
 numpy
 tflite-runtime
 tensorflow
+requests
+python-dateutil

@@ -26,7 +26,7 @@ class ForecastResult:
         model_version:   String tag identifying the model ("lstm_v1", "rule_v1").
     """
 
-    method: Literal["lstm", "rule-based", "insufficient_data"]
+    method: Literal["lstm", "rule-based", "insufficient_data", "online_api"]
     forecast_text: str
     confidence: float
     pressure_trend: float
