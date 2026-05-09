@@ -50,12 +50,16 @@ def _fmt_bool(value: bool) -> str:
 def display(
     weather: Optional[WeatherData],
     gps: Optional[GpsData],
+    forecast=None,
+    data_count: int = 0,
 ) -> None:
-    """Clear the terminal and render the weather/GPS data table.
+    """Clear the terminal and render the weather/GPS/forecast table.
 
     Args:
-        weather: Latest BME280 reading, or ``None`` if the sensor failed.
-        gps: Latest GPS reading, or ``None`` if the sensor failed.
+        weather:    Latest BME280 reading, or ``None`` if the sensor failed.
+        gps:        Latest GPS reading, or ``None`` if the sensor failed.
+        forecast:   ForecastResult from LSTM or rule engine, or None.
+        data_count: Current number of rows in the history DB (for status line).
     """
     os.system("clear")  # noqa: S605 – intentional terminal clear
 
@@ -100,9 +104,56 @@ def display(
 
     lines.append(_hline())
 
+    # ── Forecast section ──────────────────────────────────────────────────
+    if forecast is not None:
+        _append_forecast(lines, forecast, data_count)
+    else:
+        lines.append(_row("🔮 ПРОГНОЗ: нет данных"))
+
+    lines.append(_hline())
+
     # ── Footer: last update timestamp ───────────────────────────────────
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines.append(_row(f"Updated      : {now}"))
     lines.append(_hline(_BL, _BR))
 
     print("\n".join(lines))
+
+
+def _append_forecast(lines: list[str], forecast, data_count: int) -> None:
+    """Append forecast rows to *lines* depending on method."""
+    method = forecast.method
+
+    if method == "lstm":
+        lines.append(_row("🔮 ПРОГНОЗ (LSTM)"))
+        lines.append(_row(forecast.forecast_text[:_INNER - 1]))
+
+        trend = forecast.pressure_trend
+        arrow = "▲" if trend >= 0 else "▼"
+        lines.append(_row(f"Давление: {arrow} {trend:+.1f} hPa"))
+
+        if forecast.temp_in_1h is not None:
+            lines.append(_row(f"Темп +1ч : {forecast.temp_in_1h:.1f}°C"))
+        if forecast.temp_in_2h is not None:
+            lines.append(_row(f"Темп +2ч : {forecast.temp_in_2h:.1f}°C"))
+        if forecast.temp_in_3h is not None:
+            lines.append(_row(f"Темп +3ч : {forecast.temp_in_3h:.1f}°C"))
+
+        lines.append(_row(f"Точность : {forecast.confidence * 100:.0f}%"))
+        lines.append(_row(f"До       : {forecast.valid_until.strftime('%H:%M')}"))
+
+    elif method == "rule-based":
+        lines.append(_row("🔮 ПРОГНОЗ (правила, сбор данных)"))
+        lines.append(_row(forecast.forecast_text[:_INNER - 1]))
+
+        import config
+        lines.append(_row(f"Накоплено: {data_count}/{config.FORECAST_MIN_READINGS}"))
+
+        trend = forecast.pressure_trend
+        arrow = "▲" if trend >= 0 else "▼"
+        lines.append(_row(f"Давление: {arrow} {trend:+.1f} hPa/ч"))
+
+    else:  # insufficient_data
+        lines.append(_row("🔮 ПРОГНОЗ: сбор данных..."))
+        import config
+        lines.append(_row(f"Накоплено: {data_count}/{config.FORECAST_MIN_READINGS}"))

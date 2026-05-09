@@ -19,6 +19,8 @@ from typing import Optional
 
 import config
 from display.terminal_display import display as terminal_display
+from forecasting import DataStore, LSTMForecaster, RuleForecaster
+from forecasting.forecast_result import ForecastResult
 from sensors.bme280_sensor import BME280Sensor, WeatherData
 from sensors.gps_sensor import GPSSensor, GpsData
 from utils.logger import get_logger
@@ -82,11 +84,10 @@ def main() -> None:
 
     logger.info("Weather Station starting (update interval: %d s).", interval)
 
+    # ── Sensors ───────────────────────────────────────────────────────────────
     bme = BME280Sensor()
     gps = GPSSensor()
-
-    bme_ok = False
-    gps_ok = False
+    bme_ok = gps_ok = False
 
     try:
         bme.connect()
@@ -104,6 +105,13 @@ def main() -> None:
         logger.critical("Both sensors failed to initialise — exiting.")
         sys.exit(1)
 
+    # ── Forecasting ───────────────────────────────────────────────────────────
+    data_store     = DataStore()
+    rule_forecaster = RuleForecaster()
+    lstm_forecaster = LSTMForecaster(data_store)
+    _lstm_was_ready = False  # track first transition for logging
+
+    # ── TFT display ───────────────────────────────────────────────────────────
     tft: Optional[TFTDisplay] = None
     if _TFT_AVAILABLE and not args.no_tft:
         try:
@@ -112,31 +120,31 @@ def main() -> None:
         except Exception as exc:
             logger.warning("TFT display init failed (continuing without it): %s", exc)
 
-    # WiFi button — GPIO 25, physical pin 22, connect to GND
+    # ── WiFi button ───────────────────────────────────────────────────────────
     _wifi_requested = threading.Event()
-    wifi_button = None
     if tft is not None and _WIFI_AVAILABLE:
         try:
             from gpiozero import Button
-            wifi_button = Button(_WIFI_BUTTON_GPIO, pull_up=True, bounce_time=0.1)
-            wifi_button.when_pressed = lambda: _wifi_requested.set()
+            wifi_btn = Button(_WIFI_BUTTON_GPIO, pull_up=True, bounce_time=0.1)
+            wifi_btn.when_pressed = lambda: _wifi_requested.set()
             logger.info("WiFi button active on GPIO %d.", _WIFI_BUTTON_GPIO)
         except Exception as exc:
             logger.warning("WiFi button setup failed: %s", exc)
 
+    # ── Main loop ─────────────────────────────────────────────────────────────
     try:
         while True:
-            # Enter WiFi settings if button was pressed
+            # WiFi settings screen
             if _wifi_requested.is_set() and tft is not None and _WIFI_AVAILABLE:
                 _wifi_requested.clear()
                 logger.info("Entering WiFi settings screen.")
                 try:
-                    wifi = WiFiScreen(tft)
-                    wifi.run()
+                    WiFiScreen(tft).run()
                 except Exception as exc:
                     logger.error("WiFi screen error: %s", exc)
                 continue
 
+            # Read sensors
             gps_data: Optional[GpsData] = _safe_read_gps(gps) if gps_ok else None
 
             altitude_m: float = 0.0
@@ -147,8 +155,38 @@ def main() -> None:
                 _safe_read_weather(bme, altitude_m) if bme_ok else None
             )
 
-            terminal_display(weather_data, gps_data)
+            # Persist reading
+            if weather_data is not None:
+                try:
+                    data_store.save(weather_data)
+                except Exception as exc:
+                    logger.error("DataStore.save error: %s", exc)
 
+            # Forecast
+            forecast: Optional[ForecastResult] = None
+            try:
+                data_count = data_store.count()
+                if lstm_forecaster.is_ready():
+                    if not _lstm_was_ready:
+                        logger.info("Switching to LSTM forecast.")
+                        _lstm_was_ready = True
+                    forecast = lstm_forecaster.predict(
+                        data_store.get_last_n(config.SEQUENCE_LENGTH)
+                    )
+                    lstm_forecaster._retrain_if_needed()
+                else:
+                    forecast = rule_forecaster.predict(
+                        data_store.get_last_n(60)
+                    )
+                    # Trigger initial training in background
+                    lstm_forecaster._retrain_if_needed()
+            except Exception as exc:
+                logger.error("Forecast error: %s", exc)
+
+            # Terminal display
+            terminal_display(weather_data, gps_data, forecast, data_count)
+
+            # TFT display
             if tft is not None:
                 tft_data = {
                     'temperature': weather_data.temperature if weather_data else None,

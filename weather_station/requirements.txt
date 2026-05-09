@@ -6,3 +6,6 @@ luma.lcd
 lgpio
 pillow
 evdev
+numpy
+tflite-runtime
+tensorflow
