@@ -95,16 +95,19 @@ class HybridForecaster:
 
     def predict(
         self,
-        gps:     Optional["GpsData"],
-        recent:  List["WeatherData"],
+        gps:             Optional["GpsData"],
+        recent:          List["WeatherData"],
+        current_weather: Optional["WeatherData"] = None,
     ) -> HybridForecastResult:
         """Produce the best available forecast for the current conditions.
 
         Tries engines in priority order and falls through on any failure.
 
         Args:
-            gps:    Latest GpsData snapshot, or None if GPS failed.
-            recent: Recent WeatherData readings (chronological) from DataStore.
+            gps:             Latest GpsData snapshot, or None if GPS failed.
+            recent:          Recent WeatherData readings (chronological).
+            current_weather: Most recent reading — passed to RuleForecaster
+                             as the extrapolation baseline.
 
         Returns:
             :class:`HybridForecastResult` from whichever engine succeeded.
@@ -128,13 +131,8 @@ class HybridForecaster:
                 self._api_last_ok = datetime.now()
                 self._mode        = "online"
                 logger.debug("Forecast mode: online API.")
-                return self._wrap(
-                    base,
-                    mode               = "online",
-                    internet_available = True,
-                    gps_used           = True,
-                    precip_probability = self._online.last_precip_probability,
-                )
+                return self._wrap(base, mode="online",
+                                  internet_available=True, gps_used=True)
 
         # ── 2. LSTM ───────────────────────────────────────────────────────────
         if self._lstm.is_ready():
@@ -143,30 +141,22 @@ class HybridForecaster:
                 if base.method != "insufficient_data":
                     self._mode = "lstm"
                     logger.debug("Forecast mode: LSTM.")
-                    return self._wrap(
-                        base,
-                        mode               = "lstm",
-                        internet_available = internet,
-                        gps_used           = False,
-                    )
+                    return self._wrap(base, mode="lstm",
+                                      internet_available=internet, gps_used=False)
             except Exception as exc:
                 logger.warning("LSTMForecaster.predict raised: %s", exc)
 
         # ── 3. Rule-based fallback ────────────────────────────────────────────
         try:
-            base = self._rules.predict(recent)
+            base = self._rules.predict(recent, current_weather)
         except Exception as exc:
             logger.error("RuleForecaster.predict raised: %s — using stub.", exc)
             base = self._stub_result()
 
         self._mode = "rule-based"
         logger.debug("Forecast mode: rule-based.")
-        return self._wrap(
-            base,
-            mode               = "rule-based",
-            internet_available = internet,
-            gps_used           = False,
-        )
+        return self._wrap(base, mode="rule-based",
+                          internet_available=internet, gps_used=False)
 
     def get_mode(self) -> Literal["online", "lstm", "rule-based"]:
         """Return the mode used in the most recent :meth:`predict` call."""
@@ -195,23 +185,30 @@ class HybridForecaster:
         mode:               Literal["online", "lstm", "rule-based"],
         internet_available: bool,
         gps_used:           bool,
-        precip_probability: Optional[float] = None,
     ) -> HybridForecastResult:
         """Promote a plain ForecastResult to HybridForecastResult."""
+        # Convenience max-precip for TFT display
+        probs = [p for p in (base.precip_prob_1h, base.precip_prob_2h,
+                              base.precip_prob_3h) if p is not None]
+        max_precip = max(probs) if probs else None
+
         return HybridForecastResult(
             # ── inherited ForecastResult fields ──
-            method          = base.method,
-            forecast_text   = base.forecast_text,
-            confidence      = base.confidence,
-            pressure_trend  = base.pressure_trend,
-            temp_in_1h      = base.temp_in_1h,
-            temp_in_2h      = base.temp_in_2h,
-            temp_in_3h      = base.temp_in_3h,
-            pressure_in_1h  = base.pressure_in_1h,
-            pressure_in_2h  = base.pressure_in_2h,
-            pressure_in_3h  = base.pressure_in_3h,
-            valid_until     = base.valid_until,
-            model_version   = base.model_version,
+            method         = base.method,
+            forecast_text  = base.forecast_text,
+            confidence     = base.confidence,
+            pressure_trend = base.pressure_trend,
+            temp_in_1h     = base.temp_in_1h,
+            temp_in_2h     = base.temp_in_2h,
+            temp_in_3h     = base.temp_in_3h,
+            precip_prob_1h = base.precip_prob_1h,
+            precip_prob_2h = base.precip_prob_2h,
+            precip_prob_3h = base.precip_prob_3h,
+            pressure_in_1h = base.pressure_in_1h,
+            pressure_in_2h = base.pressure_in_2h,
+            pressure_in_3h = base.pressure_in_3h,
+            valid_until    = base.valid_until,
+            model_version  = base.model_version,
             # ── hybrid metadata ──
             mode               = mode,
             internet_available = internet_available,
@@ -220,7 +217,7 @@ class HybridForecaster:
             data_collected     = self._data_store.count(),
             data_required      = config.FORECAST_MIN_READINGS,
             api_last_success   = self._api_last_ok,
-            precip_probability = precip_probability,
+            precip_probability = max_precip,
         )
 
     @staticmethod
@@ -234,6 +231,9 @@ class HybridForecaster:
             temp_in_1h     = None,
             temp_in_2h     = None,
             temp_in_3h     = None,
+            precip_prob_1h = None,
+            precip_prob_2h = None,
+            precip_prob_3h = None,
             pressure_in_1h = None,
             pressure_in_2h = None,
             pressure_in_3h = None,

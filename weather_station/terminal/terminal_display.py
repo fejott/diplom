@@ -47,6 +47,19 @@ def _fmt_bool(value: bool) -> str:
     return "YES" if value else "NO"
 
 
+def _precip_emoji(prob: float) -> str:
+    if prob >= 0.7: return "🌧"
+    if prob >= 0.4: return "🌦"
+    if prob >= 0.2: return "🌤"
+    return "☀"
+
+
+def _pressure_arrow(trend: float) -> str:
+    if trend > 0.5:  return "▲"
+    if trend < -0.5: return "▼"
+    return "—"
+
+
 def display(
     weather: Optional[WeatherData],
     gps: Optional[GpsData],
@@ -121,66 +134,58 @@ def display(
 
 
 def _append_forecast(lines: list[str], forecast, data_count: int) -> None:
-    """Append forecast rows to *lines* depending on method / mode."""
-    method = forecast.method
-
-    # Pull hybrid-only fields safely (absent on plain ForecastResult)
-    precip   = getattr(forecast, 'precip_probability', None)
+    """Append a unified forecast table to *lines* (identical structure for all modes)."""
+    method   = forecast.method
     internet = getattr(forecast, 'internet_available', None)
     gps_used = getattr(forecast, 'gps_used', False)
+    lstm_rdy = getattr(forecast, 'lstm_ready', True)
 
+    # ── Mode header ─────────────────────────────────────────────────────────
     if method == "online_api":
         lines.append(_row("🌐 ПРОГНОЗ (Online API)"))
-        lines.append(_row(forecast.forecast_text[:_INNER - 1]))
-        if precip is not None:
-            lines.append(_row(f"Осадки   : {precip:.0f}%"))
-        if forecast.temp_in_1h is not None:
-            lines.append(_row(f"Темп +1ч : {forecast.temp_in_1h:.1f}°C"))
-        if forecast.temp_in_2h is not None:
-            lines.append(_row(f"Темп +2ч : {forecast.temp_in_2h:.1f}°C"))
-        if forecast.temp_in_3h is not None:
-            lines.append(_row(f"Темп +3ч : {forecast.temp_in_3h:.1f}°C"))
-        lines.append(
-            _row(f"Точность : {forecast.confidence * 100:.0f}%"
-                 f"  До: {forecast.valid_until.strftime('%H:%M')}")
-        )
-
     elif method == "lstm":
-        lines.append(_row("🤖 ПРОГНОЗ (Автономный LSTM)"))
-        lines.append(_row(forecast.forecast_text[:_INNER - 1]))
-
-        trend = forecast.pressure_trend
-        arrow = "▲" if trend >= 0 else "▼"
-        lines.append(_row(f"Давл +3ч : {arrow} {trend:+.1f} hPa"))
-
-        if forecast.temp_in_1h is not None:
-            lines.append(_row(f"Темп +1ч : {forecast.temp_in_1h:.1f}°C"))
-        if forecast.temp_in_2h is not None:
-            lines.append(_row(f"Темп +2ч : {forecast.temp_in_2h:.1f}°C"))
-        if forecast.temp_in_3h is not None:
-            lines.append(_row(f"Темп +3ч : {forecast.temp_in_3h:.1f}°C"))
-        lines.append(
-            _row(f"Точность : {forecast.confidence * 100:.0f}%"
-                 f"  До: {forecast.valid_until.strftime('%H:%M')}")
-        )
-
+        lines.append(_row("🤖 ПРОГНОЗ (Авт. LSTM)"))
     elif method == "rule-based":
-        import config as _cfg
         if internet is False:
-            subtitle = "Правила, нет интернета"
+            lines.append(_row("📊 ПРОГНОЗ (нет интернета)"))
         elif not gps_used:
-            subtitle = "Правила, нет GPS"
+            lines.append(_row("📊 ПРОГНОЗ (нет GPS)"))
         else:
-            subtitle = "Правила, сбор данных"
-        lines.append(_row(f"📡 ПРОГНОЗ ({subtitle})"))
-        lines.append(_row(forecast.forecast_text[:_INNER - 1]))
-
-        trend = forecast.pressure_trend
-        arrow = "▲" if trend >= 0 else "▼"
-        lines.append(_row(f"Давление : {arrow} {trend:+.1f} hPa/ч"))
-        lines.append(_row(f"Накоплено: {data_count}/{_cfg.FORECAST_MIN_READINGS}"))
-
+            lines.append(_row("📊 ПРОГНОЗ (По правилам)"))
     else:  # insufficient_data
         import config as _cfg
         lines.append(_row("📡 ПРОГНОЗ: сбор данных..."))
+        lines.append(_row(f"Накоплено: {data_count}/{_cfg.FORECAST_MIN_READINGS}"))
+        return
+
+    # ── +1h / +2h / +3h table (same for all active modes) ──────────────────
+    lines.append(_row(f" {'Вр':<4}  {'Темп':>6}   Осадки"))
+    for h, temp, prob in (
+        (1, forecast.temp_in_1h, forecast.precip_prob_1h),
+        (2, forecast.temp_in_2h, forecast.precip_prob_2h),
+        (3, forecast.temp_in_3h, forecast.precip_prob_3h),
+    ):
+        t_str = f"{temp:.1f}°C" if temp is not None else "  N/A"
+        if prob is not None:
+            p_str = f"{_precip_emoji(prob)}{round(prob * 100):3d}%"
+        else:
+            p_str = "   N/A"
+        lines.append(_row(f" +{h}ч   {t_str:>6}   {p_str}"))
+
+    # ── Pressure trend ───────────────────────────────────────────────────────
+    arrow = _pressure_arrow(forecast.pressure_trend)
+    lines.append(_row(f"Давление: {arrow} {forecast.pressure_trend:+.1f} hPa/ч"))
+
+    # ── Forecast text ────────────────────────────────────────────────────────
+    lines.append(_row(f"Прогноз:  {forecast.forecast_text[:_INNER - 11]}"))
+
+    # ── Confidence + valid until ─────────────────────────────────────────────
+    lines.append(_row(
+        f"Точность: {forecast.confidence * 100:.0f}%"
+        f"  До: {forecast.valid_until.strftime('%H:%M')}"
+    ))
+
+    # ── Data counter (rule-based only, while LSTM not ready) ─────────────────
+    if method == "rule-based" and not lstm_rdy:
+        import config as _cfg
         lines.append(_row(f"Накоплено: {data_count}/{_cfg.FORECAST_MIN_READINGS}"))

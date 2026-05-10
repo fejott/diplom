@@ -134,6 +134,8 @@ class LSTMForecaster:
             forecast_text    = self._trend_to_text(pressure_trend)
             confidence       = max(0.0, min(1.0, 1.0 - self._last_val_loss))
 
+            # Derive per-hour precip probability from pressure drop at each step
+            pp = self._pressure_drop_to_precip_prob
             return ForecastResult(
                 method="lstm",
                 forecast_text=forecast_text,
@@ -142,6 +144,9 @@ class LSTMForecaster:
                 temp_in_1h=temp_1h,
                 temp_in_2h=temp_2h,
                 temp_in_3h=temp_3h,
+                precip_prob_1h=pp(pres_1h - current_pressure),
+                precip_prob_2h=pp(pres_2h - current_pressure),
+                precip_prob_3h=pp(pres_3h - current_pressure),
                 pressure_in_1h=pres_1h,
                 pressure_in_2h=pres_2h,
                 pressure_in_3h=pres_3h,
@@ -396,6 +401,16 @@ class LSTMForecaster:
         return model
 
     @staticmethod
+    def _pressure_drop_to_precip_prob(drop: float) -> float:
+        """Convert a pressure drop (hPa, negative = falling) to a precip probability 0–1."""
+        if drop < -3:  return 0.85
+        if drop < -2:  return 0.70
+        if drop < -1:  return 0.50
+        if drop <  0:  return 0.30
+        if drop <  1:  return 0.10
+        return 0.05
+
+    @staticmethod
     def _trend_to_text(trend_hpa: float) -> str:
         """Convert total pressure change over horizon to Russian forecast text."""
         if trend_hpa < -3.0:
@@ -416,6 +431,9 @@ class LSTMForecaster:
             temp_in_1h=None,
             temp_in_2h=None,
             temp_in_3h=None,
+            precip_prob_1h=None,
+            precip_prob_2h=None,
+            precip_prob_3h=None,
             pressure_in_1h=None,
             pressure_in_2h=None,
             pressure_in_3h=None,

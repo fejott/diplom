@@ -183,6 +183,7 @@ def main() -> None:
                 forecast   = hybrid.predict(
                     gps_data,
                     data_store.get_last_n(config.SEQUENCE_LENGTH),
+                    current_weather=weather_data,
                 )
                 lstm_forecaster._retrain_if_needed()
             except Exception as exc:

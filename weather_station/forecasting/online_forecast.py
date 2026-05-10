@@ -121,10 +121,11 @@ class OnlineForecaster:
                     "relativehumidity_2m",
                     "apparent_temperature",
                     "precipitation_probability",
+                    "precipitation",
                     "weathercode",
                     "surface_pressure",
                 ]),
-                "forecast_days":  1,
+                "forecast_days":  2,   # 2 days so idx+3 is always in range
                 "timezone":       "auto",
             }
             resp = requests.get(
@@ -150,45 +151,51 @@ class OnlineForecaster:
                     0,
                 )
 
-            n = config.API_FORECAST_HOURS
-
-            def _get(key: str) -> list:
-                return hourly[key][idx: idx + n]
-
-            temps        = _get("temperature_2m")
-            precip_probs = _get("precipitation_probability")
-            wcodes       = _get("weathercode")
-            pressures    = _get("surface_pressure")
-
-            if len(temps) < n or len(pressures) < n:
-                logger.warning(
-                    "Open-Meteo returned fewer than %d hourly slots.", n
-                )
+            # Guard: need at least idx+3 slots
+            if len(times) < idx + 4:
+                logger.warning("Open-Meteo response too short for +3 h forecast.")
                 return None
 
-            # Most frequent WMO code wins
-            dominant_code = max(set(wcodes), key=wcodes.count)
-            forecast_text = _wmo_to_text(int(dominant_code))
+            def _h(key: str, offset: int) -> float:
+                """Return hourly[key] at current_hour + offset."""
+                return float(hourly[key][idx + offset])
 
-            # hPa/hour over the window
-            pressure_trend = (pressures[-1] - pressures[0]) / max(n - 1, 1)
+            # Extract +1h, +2h, +3h values
+            temp_1h  = _h("temperature_2m",         1)
+            temp_2h  = _h("temperature_2m",         2)
+            temp_3h  = _h("temperature_2m",         3)
 
-            # Store precip for callers to use
-            self.last_precip_probability = float(max(precip_probs))
+            precip_1h = _h("precipitation_probability", 1) / 100.0
+            precip_2h = _h("precipitation_probability", 2) / 100.0
+            precip_3h = _h("precipitation_probability", 3) / 100.0
+
+            pres_1h  = _h("surface_pressure",       1)
+            pres_2h  = _h("surface_pressure",       2)
+            pres_3h  = _h("surface_pressure",       3)
+
+            wcodes   = [int(_h("weathercode", o)) for o in (1, 2, 3)]
+            dominant = max(set(wcodes), key=wcodes.count)
+            forecast_text  = _wmo_to_text(dominant)
+            pressure_trend = (pres_3h - pres_1h) / 2   # hPa/hour
+
+            self.last_precip_probability = max(precip_1h, precip_2h, precip_3h)
 
             return ForecastResult(
-                method          = "online_api",
-                forecast_text   = forecast_text,
-                confidence      = 0.92,
-                pressure_trend  = pressure_trend,
-                temp_in_1h      = float(temps[0]) if len(temps) > 0 else None,
-                temp_in_2h      = float(temps[1]) if len(temps) > 1 else None,
-                temp_in_3h      = float(temps[2]) if len(temps) > 2 else None,
-                pressure_in_1h  = float(pressures[0]) if len(pressures) > 0 else None,
-                pressure_in_2h  = float(pressures[1]) if len(pressures) > 1 else None,
-                pressure_in_3h  = float(pressures[2]) if len(pressures) > 2 else None,
-                valid_until     = datetime.now() + timedelta(hours=n),
-                model_version   = "open_meteo_v1",
+                method         = "online_api",
+                forecast_text  = forecast_text,
+                confidence     = 0.92,
+                pressure_trend = pressure_trend,
+                temp_in_1h     = temp_1h,
+                temp_in_2h     = temp_2h,
+                temp_in_3h     = temp_3h,
+                precip_prob_1h = precip_1h,
+                precip_prob_2h = precip_2h,
+                precip_prob_3h = precip_3h,
+                pressure_in_1h = pres_1h,
+                pressure_in_2h = pres_2h,
+                pressure_in_3h = pres_3h,
+                valid_until    = datetime.now() + timedelta(hours=3),
+                model_version  = "open_meteo_v1",
             )
 
         except Exception as exc:
