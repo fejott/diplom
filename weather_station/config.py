@@ -14,7 +14,7 @@ GPS_TIMEOUT: int = 1          # seconds per read() call
 GPS_FIX_TIMEOUT: int = 10     # seconds to wait for a valid fix before giving up
 
 # Application timing
-UPDATE_INTERVAL: int = 5      # seconds between screen refresh
+UPDATE_INTERVAL: int = 30     # seconds between screen refresh
 
 # Logging
 LOG_FILE: str = "weather_station.log"
