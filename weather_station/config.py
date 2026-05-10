@@ -35,6 +35,7 @@ FORECAST_MIN_READINGS: int = 500    # min DB rows before LSTM is considered read
 LSTM_UNITS: int = 32
 LSTM_LAYERS: int = 2
 MAX_RAM_MB: int = 400
+LSTM_MAX_TRAIN_READINGS: int = 10_000  # cap training to most recent N readings
 
 # Forecasting — retraining schedule
 LSTM_RETRAIN_INTERVAL: int = 3600   # seconds between retrains
