@@ -297,8 +297,15 @@ class LSTMForecaster:
         )
 
         # Export to TFLite
+        # SELECT_TF_OPS is required for LSTM: the default converter cannot
+        # handle dynamic TensorList shapes produced by LSTM cells.
         os.makedirs(os.path.dirname(config.MODEL_PATH) or '.', exist_ok=True)
-        converter   = tf.lite.TFLiteConverter.from_keras_model(model)
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS,
+            tf.lite.OpsSet.SELECT_TF_OPS,
+        ]
+        converter._experimental_lower_tensor_list_ops = False
         tflite_data = converter.convert()
         with open(config.MODEL_PATH, 'wb') as fh:
             fh.write(tflite_data)
