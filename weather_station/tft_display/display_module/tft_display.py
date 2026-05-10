@@ -218,99 +218,126 @@ class TFTDisplay:
         # Bottom divider — forecast starts below here
         draw.line([(0, 195), (W, 195)], fill=C['divider'], width=1)
 
+    # ── Forecast helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _precip_emoji(prob: float) -> str:
+        if prob >= 0.7: return '🌧'
+        if prob >= 0.4: return '🌦'
+        if prob >= 0.2: return '🌤'
+        return '☀'
+
+    @staticmethod
+    def _pressure_arrow(trend: float) -> str:
+        if trend > 0.5:  return '▲'
+        if trend < -0.5: return '▼'
+        return '—'
+
     def _draw_forecast(self, draw: ImageDraw.ImageDraw, forecast, data_count: int) -> None:
-        """Forecast section.  Occupies y 195–308 (113 px)."""
+        """Forecast section — unified table for all modes.  Occupies y 195–308 (113 px).
+
+        Layout (after 14 px header bar):
+          y+0   column header:  Вр / Темп / Осадки
+          y+13  +1h row
+          y+26  +2h row
+          y+39  +3h row
+          y+52  pressure trend
+          y+65  forecast text
+          y+78  confidence + valid_until
+          y+91  data counter (rule-based only, while LSTM not ready)
+        All lines use f_tiny (9 pt).  Total content height ≤ 99 px — fits in 113 px section.
+        """
         W   = self.WIDTH
         top = 195
         draw.line([(0, top), (W, top)], fill=C['accent'], width=1)
         draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
 
+        # ── No forecast ───────────────────────────────────────────────────────
         if forecast is None:
-            draw.text((10, top + 2), '🔮 ПРОГНОЗ', font=self.f_label, fill=C['purple'])
+            draw.text((10, top + 2), 'ПРОГНОЗ', font=self.f_label, fill=C['purple'])
             draw.text((10, top + 18), 'Нет данных', font=self.f_small, fill=C['gray'])
             return
 
         method   = forecast.method
-        precip   = getattr(forecast, 'precip_probability', None)
         internet = getattr(forecast, 'internet_available', None)
         gps_used = getattr(forecast, 'gps_used', False)
+        lstm_rdy = getattr(forecast, 'lstm_ready', True)
 
+        # ── Header bar label ──────────────────────────────────────────────────
         if method == 'online_api':
-            draw.text((10, top + 2), '🌐 Online API', font=self.f_label, fill=C['cyan'])
-            y = top + 17
-            draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
-            y += 13
-            if precip is not None:
-                draw.text((10, y), f'Осадки: {precip:.0f}%',
-                          font=self.f_tiny, fill=C['blue'])
-                y += 13
-            if forecast.temp_in_1h is not None:
-                draw.text((10, y),
-                          f'+1ч:{forecast.temp_in_1h:.1f}°  '
-                          f'+2ч:{forecast.temp_in_2h:.1f}°  '
-                          f'+3ч:{forecast.temp_in_3h:.1f}°',
-                          font=self.f_tiny, fill=C['white'])
-                y += 13
-            draw.text((10, y),
-                      f'Точность: {forecast.confidence * 100:.0f}%  '
-                      f'До {forecast.valid_until.strftime("%H:%M")}',
-                      font=self.f_tiny, fill=C['gray'])
-
+            label, col = '🌐 Online API',    C['cyan']
         elif method == 'lstm':
-            draw.text((10, top + 2), '🤖 Авт. LSTM', font=self.f_label, fill=C['purple'])
-            y = top + 17
-            draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
-            y += 13
-            trend = forecast.pressure_trend
-            arrow = '▲' if trend >= 0 else '▼'
-            draw.text((10, y), f'Давл: {arrow}{abs(trend):.1f} hPa',
-                      font=self.f_tiny, fill=C['blue'])
-            y += 13
-            if forecast.temp_in_1h is not None:
-                draw.text((10, y),
-                          f'+1ч:{forecast.temp_in_1h:.1f}°  '
-                          f'+2ч:{forecast.temp_in_2h:.1f}°  '
-                          f'+3ч:{forecast.temp_in_3h:.1f}°',
-                          font=self.f_tiny, fill=C['white'])
-                y += 13
-            draw.text((10, y),
-                      f'Точность: {forecast.confidence * 100:.0f}%  '
-                      f'До {forecast.valid_until.strftime("%H:%M")}',
-                      font=self.f_tiny, fill=C['gray'])
-
+            label, col = '🤖 Авт. LSTM',     C['purple']
         elif method == 'rule-based':
             if internet is False:
-                subtitle = '📡 Правила: нет сети'
+                label = '📡 Правила: нет сети'
             elif not gps_used:
-                subtitle = '📡 Правила: нет GPS'
+                label = '📡 Правила: нет GPS'
             else:
-                subtitle = '📡 Правила'
-            draw.text((10, top + 2), subtitle, font=self.f_label, fill=C['orange'])
-            y = top + 17
-            draw.text((10, y), forecast.forecast_text[:28], font=self.f_tiny, fill=C['white'])
-            y += 13
-            trend = forecast.pressure_trend
-            arrow = '▲' if trend >= 0 else '▼'
-            draw.text((10, y), f'Давл: {arrow}{abs(trend):.1f} hPa/ч',
-                      font=self.f_tiny, fill=C['blue'])
-            y += 13
-            try:
-                import config
-                min_r = config.FORECAST_MIN_READINGS
-            except Exception:
-                min_r = 500
-            draw.text((10, y), f'Сбор: {data_count}/{min_r}',
-                      font=self.f_tiny, fill=C['gray'])
-
+                label = '📡 Правила'
+            col = C['orange']
         else:  # insufficient_data
-            draw.text((10, top + 2), '📡 ПРОГНОЗ', font=self.f_label, fill=C['orange'])
+            draw.text((10, top + 2), '📡 Сбор данных...', font=self.f_label, fill=C['orange'])
             y = top + 17
             try:
                 import config
                 min_r = config.FORECAST_MIN_READINGS
             except Exception:
                 min_r = 500
-            draw.text((10, y), f'Сбор данных: {data_count}/{min_r}',
+            draw.text((10, y), f'Накоплено: {data_count}/{min_r}',
+                      font=self.f_tiny, fill=C['gray'])
+            return
+
+        draw.text((10, top + 2), label, font=self.f_label, fill=col)
+
+        # ── Unified table (all active modes) ─────────────────────────────────
+        y = top + 17
+
+        # Column header
+        draw.text((10, y), 'Вр    Темп    Осадки', font=self.f_tiny, fill=C['gray'])
+        y += 13
+
+        # Three hourly rows
+        for h, temp, prob in (
+            (1, forecast.temp_in_1h, forecast.precip_prob_1h),
+            (2, forecast.temp_in_2h, forecast.precip_prob_2h),
+            (3, forecast.temp_in_3h, forecast.precip_prob_3h),
+        ):
+            t_str = f'{temp:+.1f}°C' if temp is not None else '  N/A'
+            if prob is not None:
+                p_str = f'{self._precip_emoji(prob)}{round(prob * 100):3d}%'
+            else:
+                p_str = '  N/A'
+            row = f'+{h}ч  {t_str:<7} {p_str}'
+            draw.text((10, y), row, font=self.f_tiny, fill=C['white'])
+            y += 13
+
+        # Pressure trend
+        arrow = self._pressure_arrow(forecast.pressure_trend)
+        draw.text((10, y),
+                  f'Давл: {arrow} {forecast.pressure_trend:+.1f} hPa/ч',
+                  font=self.f_tiny, fill=C['blue'])
+        y += 13
+
+        # Forecast text (truncated to ~32 chars to fit screen width)
+        draw.text((10, y), forecast.forecast_text[:32], font=self.f_tiny, fill=C['white'])
+        y += 13
+
+        # Confidence + valid_until
+        draw.text((10, y),
+                  f'Точн:{forecast.confidence * 100:.0f}%  '
+                  f'До {forecast.valid_until.strftime("%H:%M")}',
+                  font=self.f_tiny, fill=C['gray'])
+        y += 13
+
+        # Data counter — rule-based only, while LSTM is not yet ready
+        if method == 'rule-based' and not lstm_rdy:
+            try:
+                import config
+                min_r = config.FORECAST_MIN_READINGS
+            except Exception:
+                min_r = 500
+            draw.text((10, y), f'Накоплено: {data_count}/{min_r}',
                       font=self.f_tiny, fill=C['gray'])
 
     def _draw_footer(self, draw: ImageDraw.ImageDraw) -> None:
