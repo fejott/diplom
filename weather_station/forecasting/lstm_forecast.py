@@ -1,9 +1,10 @@
 """
 LSTM-based weather nowcaster.
 
-Inference uses tflite-runtime (lightweight, aarch64-compatible).
-Training uses full TensorFlow/Keras and exports a TFLite model file.
-Training always runs in a background thread — it never blocks the sensor loop.
+Training and inference both use full TensorFlow/Keras.
+The trained model is saved as a Keras SavedModel directory and reloaded
+on startup.  Training always runs in a background thread — it never
+blocks the sensor loop.
 """
 
 from __future__ import annotations
@@ -28,25 +29,6 @@ if TYPE_CHECKING:
 logger = get_logger("forecasting.lstm")
 
 
-def _load_tflite_interpreter(model_path: str):
-    """Return an allocated TFLite Interpreter, or None on failure."""
-    try:
-        import tflite_runtime.interpreter as tflite
-        interp = tflite.Interpreter(model_path=model_path)
-        interp.allocate_tensors()
-        return interp
-    except ImportError:
-        pass
-    try:
-        import tensorflow as tf
-        interp = tf.lite.Interpreter(model_path=model_path)
-        interp.allocate_tensors()
-        return interp
-    except ImportError:
-        logger.warning("Neither tflite_runtime nor tensorflow available for inference.")
-        return None
-
-
 class LSTMForecaster:
     """LSTM weather nowcaster with background retraining.
 
@@ -55,14 +37,14 @@ class LSTMForecaster:
     """
 
     def __init__(self, data_store: "DataStore") -> None:
-        self._data_store    = data_store
-        self._interpreter   = None
+        self._data_store   = data_store
+        self._model        = None   # tf.keras.Model, loaded after training
         self._scaler_min: Optional[np.ndarray] = None
         self._scaler_max: Optional[np.ndarray] = None
         self._last_val_loss: float = 1.0
         self._last_train_count: int = 0
         self._last_train_time: float = 0.0
-        self._is_training:  bool = False
+        self._is_training: bool = False
         self._training_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -81,17 +63,16 @@ class LSTMForecaster:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def is_ready(self) -> bool:
-        """True when the model file exists and the DB has enough rows."""
+        """True when the model is loaded and the DB has enough rows."""
         with self._lock:
             return (
-                self._interpreter is not None
+                self._model is not None
                 and self._scaler_min is not None
-                and os.path.exists(config.MODEL_PATH)
                 and self._data_store.count() >= config.FORECAST_MIN_READINGS
             )
 
     def predict(self, recent: List[WeatherData]) -> ForecastResult:
-        """Run TFLite inference on the most recent readings.
+        """Run Keras inference on the most recent readings.
 
         Falls back to RuleForecaster on any error.
 
@@ -106,12 +87,12 @@ class LSTMForecaster:
 
         try:
             with self._lock:
-                interp      = self._interpreter
-                scaler_min  = self._scaler_min.copy()
-                scaler_max  = self._scaler_max.copy()
+                model      = self._model
+                scaler_min = self._scaler_min.copy()
+                scaler_max = self._scaler_max.copy()
 
-            if interp is None:
-                raise RuntimeError("Interpreter not loaded")
+            if model is None:
+                raise RuntimeError("Model not loaded")
 
             # Build (1, seq_len, 3) input tensor
             raw = np.array(
@@ -119,16 +100,12 @@ class LSTMForecaster:
                  for r in recent[-config.SEQUENCE_LENGTH:]],
                 dtype=np.float32,
             )
-            rng         = scaler_max - scaler_min
+            rng           = scaler_max - scaler_min
             rng[rng == 0] = 1.0
-            norm        = (raw - scaler_min) / rng
-            inp         = norm[np.newaxis]  # (1, seq_len, 3)
+            norm          = (raw - scaler_min) / rng
+            inp           = norm[np.newaxis]  # (1, seq_len, 3)
 
-            inp_det  = interp.get_input_details()
-            out_det  = interp.get_output_details()
-            interp.set_tensor(inp_det[0]['index'], inp)
-            interp.invoke()
-            output = interp.get_tensor(out_det[0]['index'])[0]  # (9,)
+            output = model(inp, training=False).numpy()[0]  # (9,)
 
             # Denormalise: output is [t,h,p] × 3 forecast steps
             preds = []
@@ -144,7 +121,6 @@ class LSTMForecaster:
             forecast_text    = self._trend_to_text(pressure_trend)
             confidence       = max(0.0, min(1.0, 1.0 - self._last_val_loss))
 
-            # Derive per-hour precip probability from pressure drop at each step
             pp = self._pressure_drop_to_precip_prob
             return ForecastResult(
                 method="lstm",
@@ -170,13 +146,13 @@ class LSTMForecaster:
             return RuleForecaster().predict(recent)
 
     def train(self, readings: List[WeatherData]) -> Dict:
-        """Train LSTM on *readings*, export TFLite, reload interpreter.
+        """Train LSTM on *readings*, save as Keras SavedModel, reload.
 
         Args:
             readings: Full chronological history from DataStore.
 
         Returns:
-            Dict with 'val_loss' key, or empty dict on failure.
+            Dict with metric keys, or empty dict on failure.
         """
         if not self._tf_available:
             logger.error("TensorFlow not available — cannot train.")
@@ -230,7 +206,7 @@ class LSTMForecaster:
             logger.warning("train(): too few sequences (%d).", len(X))
             return {}
 
-        split    = int(len(X) * 0.8)
+        split      = int(len(X) * 0.8)
         X_tr, X_v = X[:split], X[split:]
         y_tr, y_v = y[:split], y[split:]
 
@@ -238,17 +214,16 @@ class LSTMForecaster:
         val_loss = float(model.evaluate(X_v, y_v, verbose=0))
         self._last_val_loss = val_loss
 
-        # ── Compute RMSE, MAE, precision/recall on validation set ─────────────
+        # ── Metrics on validation set ─────────────────────────────────────────
         y_pred = model.predict(X_v, verbose=0)
 
         n_steps     = len(config.FORECAST_STEPS)
         s_min_tiled = np.tile(s_min, n_steps)
         rng_tiled   = np.tile(rng,   n_steps)
 
-        y_pred_d = y_pred * rng_tiled + s_min_tiled   # denormalised predictions
-        y_v_d    = y_v    * rng_tiled + s_min_tiled   # denormalised actuals
+        y_pred_d = y_pred * rng_tiled + s_min_tiled
+        y_v_d    = y_v    * rng_tiled + s_min_tiled
 
-        # Per-step RMSE and MAE for temperature (col 0) and pressure (col 2)
         step_labels = ['1h', '2h', '3h']
         metrics: Dict[str, float] = {'val_loss': val_loss}
         for i, label in enumerate(step_labels[:n_steps]):
@@ -259,7 +234,6 @@ class LSTMForecaster:
             metrics[f'rmse_pres_{label}'] = float(np.sqrt(np.mean((pred_p - true_p) ** 2)))
             metrics[f'mae_pres_{label}']  = float(np.mean(np.abs(pred_p - true_p)))
 
-        # Pressure trend direction: binary classification (rising vs falling)
         pres_current  = X_v[:, -1, 2] * rng[2] + s_min[2]
         pres_pred_end = y_pred_d[:, (n_steps - 1) * 3 + 2]
         pres_true_end = y_v_d[:,   (n_steps - 1) * 3 + 2]
@@ -277,7 +251,6 @@ class LSTMForecaster:
         metrics.update({'precision': precision, 'recall': recall, 'f1': f1,
                         'tp': tp, 'fp': fp, 'fn': fn})
 
-        # Save metrics to disk
         try:
             os.makedirs(os.path.dirname(config.METRICS_PATH) or '.', exist_ok=True)
             with open(config.METRICS_PATH, 'w') as fh:
@@ -296,74 +269,38 @@ class LSTMForecaster:
             precision, recall, f1,
         )
 
-        # Export to TFLite
-        # SELECT_TF_OPS is required for LSTM: the default converter cannot
-        # handle dynamic TensorList shapes produced by LSTM cells.
-        os.makedirs(os.path.dirname(config.MODEL_PATH) or '.', exist_ok=True)
-        converter = tf.lite.TFLiteConverter.from_keras_model(model)
-        converter.target_spec.supported_ops = [
-            tf.lite.OpsSet.TFLITE_BUILTINS,
-            tf.lite.OpsSet.SELECT_TF_OPS,
-        ]
-        converter._experimental_lower_tensor_list_ops = False
-        tflite_data = converter.convert()
-        with open(config.MODEL_PATH, 'wb') as fh:
-            fh.write(tflite_data)
-        logger.info("TFLite model saved → %s", config.MODEL_PATH)
+        # Save as Keras SavedModel (avoids TFLite conversion issues with LSTM)
+        os.makedirs(config.MODEL_PATH, exist_ok=True)
+        model.save(config.MODEL_PATH)
+        logger.info("Keras model saved → %s", config.MODEL_PATH)
 
         with self._lock:
-            self._interpreter = _load_tflite_interpreter(config.MODEL_PATH)
+            self._model = model
 
         return metrics
 
-    def save_model(self, path: str) -> None:
-        """Copy the current TFLite model file to *path*."""
-        if not os.path.exists(config.MODEL_PATH):
-            logger.warning("save_model(): no model file to copy.")
-            return
-        import shutil
-        shutil.copy2(config.MODEL_PATH, path)
-
-    def load_model(self, path: str) -> None:
-        """Load a TFLite model from *path* into the interpreter."""
-        import shutil
-        shutil.copy2(path, config.MODEL_PATH)
-        with self._lock:
-            self._interpreter = _load_tflite_interpreter(config.MODEL_PATH)
-
     def _retrain_if_needed(self, research=None) -> None:
-        """Trigger background retraining when thresholds are met.
-
-        Conditions:
-        - Not already training.
-        - DB has at least last_train_count + RETRAIN_THRESHOLD new rows.
-        - At least LSTM_RETRAIN_INTERVAL seconds since last train.
-
-        Args:
-            research: Optional ResearchCollector.  When supplied, training
-                      metrics are logged to lstm_training_log after each
-                      successful retrain.
-        """
+        """Trigger background retraining when thresholds are met."""
         if self._is_training:
             return
 
         current_count    = self._data_store.count()
         time_since_train = time.monotonic() - self._last_train_time
 
-        enough_new_data  = current_count >= self._last_train_count + config.RETRAIN_THRESHOLD
-        enough_time      = time_since_train >= config.LSTM_RETRAIN_INTERVAL
+        enough_new_data = current_count >= self._last_train_count + config.RETRAIN_THRESHOLD
+        enough_time     = time_since_train >= config.LSTM_RETRAIN_INTERVAL
 
         if not (enough_new_data and enough_time):
             return
 
-        readings = self._data_store.get_all()
+        readings       = self._data_store.get_all()
         self._is_training = True
-        snapshot_count    = current_count
+        snapshot_count = current_count
 
         def _run():
             t0 = time.monotonic()
             try:
-                metrics = self.train(readings)
+                metrics  = self.train(readings)
                 duration = time.monotonic() - t0
                 self._last_train_count = snapshot_count
                 self._last_train_time  = time.monotonic()
@@ -393,7 +330,7 @@ class LSTMForecaster:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _try_load_from_disk(self) -> None:
-        """Load scaler and model from disk if both files exist."""
+        """Load scaler and Keras model from disk if they exist."""
         try:
             if os.path.exists(config.SCALER_PATH):
                 with open(config.SCALER_PATH, 'r') as fh:
@@ -402,16 +339,15 @@ class LSTMForecaster:
                 self._scaler_max = np.array(params['max'], dtype=np.float32)
                 logger.info("Scaler loaded from %s.", config.SCALER_PATH)
 
-            if os.path.exists(config.MODEL_PATH):
-                self._interpreter = _load_tflite_interpreter(config.MODEL_PATH)
-                if self._interpreter:
-                    logger.info("TFLite interpreter loaded from %s.", config.MODEL_PATH)
+            if os.path.isdir(config.MODEL_PATH) and self._tf_available:
+                import tensorflow as tf
+                self._model = tf.keras.models.load_model(config.MODEL_PATH)
+                logger.info("Keras model loaded from %s.", config.MODEL_PATH)
         except Exception as exc:
             logger.warning("Could not load model/scaler from disk: %s", exc)
 
     @staticmethod
     def _build_and_train_keras(X_train, y_train, X_val, y_val):
-        """Build and fit the Keras LSTM model. Internal use only."""
         import tensorflow as tf
 
         n_out = 3 * len(config.FORECAST_STEPS)
@@ -442,7 +378,6 @@ class LSTMForecaster:
 
     @staticmethod
     def _pressure_drop_to_precip_prob(drop: float) -> float:
-        """Convert a pressure drop (hPa, negative = falling) to a precip probability 0–1."""
         if drop < -3:  return 0.85
         if drop < -2:  return 0.70
         if drop < -1:  return 0.50
@@ -452,7 +387,6 @@ class LSTMForecaster:
 
     @staticmethod
     def _trend_to_text(trend_hpa: float) -> str:
-        """Convert total pressure change over horizon to Russian forecast text."""
         if trend_hpa < -3.0:
             return "Ухудшение погоды, возможны осадки"
         if trend_hpa < -1.0:
