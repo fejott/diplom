@@ -24,6 +24,7 @@ from forecasting import HybridForecaster, correct_pressure_to_sea_level
 from forecasting.forecast_result import ForecastResult
 from sensors.bme280_sensor import BME280Sensor, WeatherData
 from sensors.gps_sensor import GPSSensor, GpsData
+from research.data_collector import ResearchCollector
 from utils.logger import get_logger
 
 logger = get_logger("main")
@@ -112,6 +113,9 @@ def main() -> None:
     rule_forecaster = RuleForecaster()
     hybrid          = HybridForecaster(data_store, lstm_forecaster, rule_forecaster)
 
+    # ── Research data collector ───────────────────────────────────────────────
+    research = ResearchCollector()
+
     # ── TFT display ───────────────────────────────────────────────────────────
     tft: Optional[TFTDisplay] = None
     if _TFT_AVAILABLE and not args.no_tft:
@@ -145,16 +149,22 @@ def main() -> None:
                     logger.error("WiFi screen error: %s", exc)
                 continue
 
-            # Read sensors
+            # ── Timed sensor reads ────────────────────────────────────────────
+            cycle_start = time.perf_counter()
+
+            t0 = time.perf_counter()
             gps_data: Optional[GpsData] = _safe_read_gps(gps) if gps_ok else None
+            gps_ms = (time.perf_counter() - t0) * 1000
 
             altitude_m: float = 0.0
             if gps_data is not None and gps_data.fix and gps_data.altitude is not None:
                 altitude_m = gps_data.altitude
 
+            t0 = time.perf_counter()
             weather_data: Optional[WeatherData] = (
                 _safe_read_weather(bme, altitude_m) if bme_ok else None
             )
+            bme280_ms = (time.perf_counter() - t0) * 1000
 
             # Correct sea-level pressure explicitly from GPS altitude
             if (weather_data is not None
@@ -175,9 +185,10 @@ def main() -> None:
                 except Exception as exc:
                     logger.error("DataStore.save error: %s", exc)
 
-            # Forecast (hybrid: online API → LSTM → rules)
+            # ── Forecast (hybrid: online API → LSTM → rules) ──────────────────
             forecast: Optional[ForecastResult] = None
             data_count: int = 0
+            t0 = time.perf_counter()
             try:
                 data_count = data_store.count()
                 forecast   = hybrid.predict(
@@ -185,9 +196,27 @@ def main() -> None:
                     data_store.get_last_n(config.SEQUENCE_LENGTH),
                     current_weather=weather_data,
                 )
-                lstm_forecaster._retrain_if_needed()
+                lstm_forecaster._retrain_if_needed(research)
             except Exception as exc:
                 logger.error("Forecast error: %s", exc)
+            forecast_ms = (time.perf_counter() - t0) * 1000
+            total_ms    = (time.perf_counter() - cycle_start) * 1000
+
+            # ── Research logging ──────────────────────────────────────────────
+            try:
+                research.log_sensor(weather_data, gps_data)
+                if forecast is not None:
+                    research.log_forecast(forecast, weather_data)
+                    research.verify_forecasts(weather_data)
+                research.log_timing({
+                    "bme280_ms":   bme280_ms,
+                    "gps_ms":      gps_ms,
+                    "forecast_ms": forecast_ms,
+                    "total_ms":    total_ms,
+                    "mode":        getattr(forecast, "mode", None) if forecast else None,
+                })
+            except Exception as exc:
+                logger.warning("Research logging error: %s", exc)
 
             # Terminal display
             terminal_display(weather_data, gps_data, forecast, data_count)

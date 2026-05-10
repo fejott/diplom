@@ -311,13 +311,18 @@ class LSTMForecaster:
         with self._lock:
             self._interpreter = _load_tflite_interpreter(config.MODEL_PATH)
 
-    def _retrain_if_needed(self) -> None:
+    def _retrain_if_needed(self, research=None) -> None:
         """Trigger background retraining when thresholds are met.
 
         Conditions:
         - Not already training.
         - DB has at least last_train_count + RETRAIN_THRESHOLD new rows.
         - At least LSTM_RETRAIN_INTERVAL seconds since last train.
+
+        Args:
+            research: Optional ResearchCollector.  When supplied, training
+                      metrics are logged to lstm_training_log after each
+                      successful retrain.
         """
         if self._is_training:
             return
@@ -336,11 +341,26 @@ class LSTMForecaster:
         snapshot_count    = current_count
 
         def _run():
+            t0 = time.monotonic()
             try:
-                self.train(readings)
+                metrics = self.train(readings)
+                duration = time.monotonic() - t0
                 self._last_train_count = snapshot_count
                 self._last_train_time  = time.monotonic()
                 logger.info("Background retrain complete (count=%d).", snapshot_count)
+
+                if research is not None and metrics:
+                    try:
+                        research.log_lstm_training({
+                            "readings_count": snapshot_count,
+                            "mae_temp":       metrics.get("mae_temp_1h", 0.0),
+                            "mae_pressure":   metrics.get("mae_pres_1h", 0.0),
+                            "rmse_temp":      metrics.get("rmse_temp_1h", 0.0),
+                            "rmse_pressure":  metrics.get("rmse_pres_1h", 0.0),
+                            "duration_sec":   round(duration, 2),
+                        })
+                    except Exception as exc:
+                        logger.warning("research.log_lstm_training error: %s", exc)
             except Exception as exc:
                 logger.error("Background retrain failed: %s", exc)
             finally:
