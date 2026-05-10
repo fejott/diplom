@@ -161,17 +161,20 @@ class ReportGenerator:
             rmse_t1 = _rmse(r["mse_t1"])
             rmse_p1 = _rmse(r["mse_p1"])
 
+            def _fmt_t(v): return f"{v:>9.3f}°" if v is not None else f"{'—':>10}"
+            def _fmt_p(v): return f"{v:>9.2f}" if v is not None else f"{'—':>9}"
+
             lines += [
                 "",
                 f"  ▸ Режим: {r['mode']}   (N={n})",
                 f"    {'Горизонт':<10} {'MAE Темп':>10} {'MAE Давл':>10} {'RMSE Темп':>12}",
                 "    " + "─" * 44,
                 f"    {'+1ч':<10} "
-                f"{r['mae_t1']:>9.3f}°  {r['mae_p1']:>9.2f}  {rmse_t1:>11.3f}°",
+                f"{_fmt_t(r['mae_t1'])}  {_fmt_p(r['mae_p1'])}  {rmse_t1:>11.3f}°",
                 f"    {'+2ч':<10} "
-                f"{r['mae_t2']:>9.3f}°  {r['mae_p2']:>9.2f}",
+                f"{_fmt_t(r['mae_t2'])}  {_fmt_p(r['mae_p2'])}",
                 f"    {'+3ч':<10} "
-                f"{r['mae_t3']:>9.3f}°  {r['mae_p3']:>9.2f}",
+                f"{_fmt_t(r['mae_t3'])}  {_fmt_p(r['mae_p3'])}",
             ]
 
             if r["mae_t1"] is not None:
