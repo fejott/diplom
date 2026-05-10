@@ -271,8 +271,6 @@ class TFTDisplay:
         elif method == 'rule-based':
             if internet is False:
                 label = '📡 Правила: нет сети'
-            elif not gps_used:
-                label = '📡 Правила: нет GPS'
             else:
                 label = '📡 Правила'
             col = C['orange']

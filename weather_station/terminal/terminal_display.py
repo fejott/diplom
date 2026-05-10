@@ -148,8 +148,6 @@ def _append_forecast(lines: list[str], forecast, data_count: int) -> None:
     elif method == "rule-based":
         if internet is False:
             lines.append(_row("📊 ПРОГНОЗ (нет интернета)"))
-        elif not gps_used:
-            lines.append(_row("📊 ПРОГНОЗ (нет GPS)"))
         else:
             lines.append(_row("📊 ПРОГНОЗ (По правилам)"))
     else:  # insufficient_data
