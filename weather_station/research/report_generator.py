@@ -33,18 +33,18 @@ def _conn(db_path: pathlib.Path) -> sqlite3.Connection:
     return c
 
 
-def _std(sum_sq: Optional[float], avg: Optional[float], n: int) -> Optional[float]:
-    """Population std-dev from pre-computed sum-of-squares and mean."""
-    if n < 2 or sum_sq is None or avg is None:
+def _std(avg_sq: Optional[float], avg: Optional[float], n: int) -> Optional[float]:
+    """Population std-dev: sqrt(E[x²] - E[x]²).  avg_sq = AVG(x*x) from SQL."""
+    if n < 2 or avg_sq is None or avg is None:
         return None
-    variance = sum_sq / n - avg ** 2
-    return math.sqrt(max(0.0, variance))
+    return math.sqrt(max(0.0, avg_sq - avg ** 2))
 
 
-def _rmse(sum_sq: Optional[float], n: int) -> Optional[float]:
-    if n < 1 or sum_sq is None:
+def _rmse(mse: Optional[float]) -> Optional[float]:
+    """RMSE from MSE (AVG of squared errors) already computed by SQL."""
+    if mse is None:
         return None
-    return math.sqrt(sum_sq / n)
+    return math.sqrt(mse)
 
 
 class ReportGenerator:
@@ -158,8 +158,8 @@ class ReportGenerator:
                 )
                 continue
 
-            rmse_t1 = _rmse(r["mse_t1"], n)
-            rmse_p1 = _rmse(r["mse_p1"], n)
+            rmse_t1 = _rmse(r["mse_t1"])
+            rmse_p1 = _rmse(r["mse_p1"])
 
             lines += [
                 "",
