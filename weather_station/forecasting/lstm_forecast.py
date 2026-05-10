@@ -179,6 +179,10 @@ class LSTMForecaster:
             [[r.temperature, r.humidity, r.pressure] for r in readings],
             dtype=np.float32,
         )
+        data = self._filter_data(data)
+        if len(data) < config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 10:
+            logger.warning("train(): too few readings after filtering (%d).", len(data))
+            return {}
         s_min = data.min(axis=0)
         s_max = data.max(axis=0)
         rng   = s_max - s_min
@@ -362,6 +366,61 @@ class LSTMForecaster:
                 logger.info("Model loaded from weights → %s", weights_file)
         except Exception as exc:
             logger.warning("Could not load model/scaler from disk: %s", exc)
+
+    @staticmethod
+    def _filter_data(data: np.ndarray) -> np.ndarray:
+        """Remove physically implausible values and IQR spikes, then interpolate.
+
+        Args:
+            data: (N, 3) float32 array of [temperature, humidity, pressure].
+
+        Returns:
+            Cleaned array with outliers replaced by linear interpolation.
+        """
+        result = data.astype(np.float64)
+
+        # Hard physical bounds per column: [temp, humidity, pressure]
+        bounds = [
+            (config.FILTER_TEMP_MIN,     config.FILTER_TEMP_MAX),
+            (0.0,                         100.0),
+            (config.FILTER_PRESSURE_MIN, config.FILTER_PRESSURE_MAX),
+        ]
+        for col, (lo, hi) in enumerate(bounds):
+            mask = (result[:, col] < lo) | (result[:, col] > hi)
+            result[mask, col] = np.nan
+
+        # IQR spike filter per column
+        k = config.FILTER_IQR_MULTIPLIER
+        for col in range(result.shape[1]):
+            vals  = result[:, col]
+            valid = vals[~np.isnan(vals)]
+            if len(valid) < 4:
+                continue
+            q1, q3 = np.percentile(valid, 25), np.percentile(valid, 75)
+            iqr = q3 - q1
+            if iqr == 0:
+                continue
+            spikes = (vals < q1 - k * iqr) | (vals > q3 + k * iqr)
+            result[spikes, col] = np.nan
+
+        # Linear interpolation for NaN values
+        indices = np.arange(len(result))
+        for col in range(result.shape[1]):
+            vals = result[:, col]
+            nans = np.isnan(vals)
+            if not nans.any():
+                continue
+            good = ~nans
+            if good.sum() < 2:
+                continue
+            result[nans, col] = np.interp(indices[nans], indices[good], vals[good])
+
+        # Drop any edge rows that are still NaN
+        valid_rows = ~np.isnan(result).any(axis=1)
+        n_dropped = len(data) - valid_rows.sum()
+        if n_dropped:
+            logger.info("Filtered %d outlier readings from training data.", n_dropped)
+        return result[valid_rows].astype(np.float32)
 
     @staticmethod
     def _build_and_train_keras(X_train, y_train, X_val, y_val):
