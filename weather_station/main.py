@@ -18,7 +18,7 @@ import threading
 from typing import Optional
 
 import config
-from display.terminal_display import display as terminal_display
+from terminal.terminal_display import display as terminal_display
 from forecasting import DataStore, LSTMForecaster, RuleForecaster
 from forecasting import HybridForecaster, correct_pressure_to_sea_level
 from forecasting.forecast_result import ForecastResult
@@ -29,13 +29,13 @@ from utils.logger import get_logger
 logger = get_logger("main")
 
 try:
-    from display.tft_display import TFTDisplay
+    from tft_display.display_module.tft_display import TFTDisplay
     _TFT_AVAILABLE = True
 except ImportError:
     _TFT_AVAILABLE = False
 
 try:
-    from display.wifi_screen import WiFiScreen
+    from tft_display.display_module.wifi_screen import WiFiScreen
     _WIFI_AVAILABLE = True
 except ImportError:
     _WIFI_AVAILABLE = False
