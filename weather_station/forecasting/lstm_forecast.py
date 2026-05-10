@@ -66,6 +66,16 @@ class LSTMForecaster:
         self._training_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
+        # Pre-import TensorFlow in the main thread so the background training
+        # thread can use the cached sys.modules entry (TF init is not thread-safe).
+        self._tf_available = False
+        try:
+            import tensorflow as _tf  # noqa: F401
+            self._tf_available = True
+            logger.info("TensorFlow %s available for training.", _tf.__version__)
+        except Exception as exc:
+            logger.warning("TensorFlow not available — LSTM training disabled: %s", exc)
+
         self._try_load_from_disk()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -168,10 +178,13 @@ class LSTMForecaster:
         Returns:
             Dict with 'val_loss' key, or empty dict on failure.
         """
+        if not self._tf_available:
+            logger.error("TensorFlow not available — cannot train.")
+            return {}
         try:
             import tensorflow as tf
-        except ImportError:
-            logger.error("TensorFlow not available — cannot train.")
+        except Exception as exc:
+            logger.error("TensorFlow import failed in training thread: %s", exc)
             return {}
 
         if len(readings) < config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 10:
