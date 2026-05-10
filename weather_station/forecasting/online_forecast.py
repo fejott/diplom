@@ -64,6 +64,8 @@ class OnlineForecaster:
         self._available: Optional[bool] = None
         self._last_check: float = 0.0
         self.last_precip_probability: Optional[float] = None
+        self._cached_forecast: Optional[ForecastResult] = None
+        self._last_fetch: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -108,9 +110,17 @@ class OnlineForecaster:
                       API for surface-pressure correction at station height).
 
         Returns:
-            :class:`ForecastResult` with ``method="online_api"``, or ``None``
+            Cached or freshly fetched :class:`ForecastResult` with
+            ``method="online_api"``, or ``None``
             on any error (network timeout, bad response, missing data, etc.).
         """
+        now = time.monotonic()
+        if (
+            self._cached_forecast is not None
+            and (now - self._last_fetch) < config.API_FETCH_CACHE_SEC
+        ):
+            return self._cached_forecast
+
         try:
             params: Dict[str, Any] = {
                 "latitude":       lat,
@@ -180,7 +190,7 @@ class OnlineForecaster:
 
             self.last_precip_probability = max(precip_1h, precip_2h, precip_3h)
 
-            return ForecastResult(
+            result = ForecastResult(
                 method         = "online_api",
                 forecast_text  = forecast_text,
                 confidence     = 0.92,
@@ -197,6 +207,9 @@ class OnlineForecaster:
                 valid_until    = datetime.now() + timedelta(hours=3),
                 model_version  = "open_meteo_v1",
             )
+            self._cached_forecast = result
+            self._last_fetch = now
+            return result
 
         except Exception as exc:
             logger.warning("Open-Meteo fetch failed: %s", exc)

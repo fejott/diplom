@@ -51,6 +51,7 @@ RETRAIN_THRESHOLD: int = 100        # new readings needed to trigger a retrain
 # Online / hybrid forecasting
 INTERNET_CHECK_URL: str      = "https://api.open-meteo.com"
 INTERNET_CHECK_TIMEOUT: int  = 3     # seconds
-INTERNET_CHECK_CACHE_SEC: int = 60  # cache availability result for N seconds
-API_FORECAST_HOURS: int      = 3    # hours ahead to request from Open-Meteo
+INTERNET_CHECK_CACHE_SEC: int = 60   # cache availability result for N seconds
+API_FETCH_CACHE_SEC: int     = 600   # cache forecast response for N seconds (10 min)
+API_FORECAST_HOURS: int      = 3     # hours ahead to request from Open-Meteo
 OPEN_METEO_BASE_URL: str     = "https://api.open-meteo.com/v1/forecast"
