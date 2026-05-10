@@ -26,7 +26,15 @@ _DB_PATH = pathlib.Path(__file__).resolve().parent / "research_data.db"
 def _quick_status() -> str:
     """One-screen summary of collected data."""
     if not _DB_PATH.exists():
-        return "research_data.db не найдена — запустите main.py сначала."
+        return (
+            "═" * 50 + "\n"
+            "  СТАТУС ИССЛЕДОВАНИЯ\n"
+            "═" * 50 + "\n"
+            "  Данных пока нет.\n"
+            "  research_data.db создаётся автоматически при\n"
+            "  первом запуске main.py.\n"
+            "═" * 50
+        )
 
     with sqlite3.connect(str(_DB_PATH)) as c:
         c.row_factory = sqlite3.Row

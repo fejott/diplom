@@ -22,8 +22,14 @@ _MIN_VERIFY = 10    # skip mode in accuracy report if fewer verified forecasts
 
 
 def _conn(db_path: pathlib.Path) -> sqlite3.Connection:
+    """Open (and if necessary create) the research DB."""
+    # Import DDL from data_collector so tables always exist, even when
+    # the CLI is run before main.py has started.
+    from research.data_collector import _DDL
     c = sqlite3.connect(str(db_path))
     c.row_factory = sqlite3.Row
+    c.executescript(_DDL)
+    c.commit()
     return c
 
 
