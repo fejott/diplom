@@ -269,8 +269,8 @@ class LSTMForecaster:
             precision, recall, f1,
         )
 
-        # Save as Keras SavedModel (avoids TFLite conversion issues with LSTM)
-        os.makedirs(config.MODEL_PATH, exist_ok=True)
+        # Save as native Keras format (.keras)
+        os.makedirs(os.path.dirname(config.MODEL_PATH) or '.', exist_ok=True)
         model.save(config.MODEL_PATH)
         logger.info("Keras model saved → %s", config.MODEL_PATH)
 
@@ -339,7 +339,7 @@ class LSTMForecaster:
                 self._scaler_max = np.array(params['max'], dtype=np.float32)
                 logger.info("Scaler loaded from %s.", config.SCALER_PATH)
 
-            if os.path.isdir(config.MODEL_PATH) and self._tf_available:
+            if os.path.exists(config.MODEL_PATH) and self._tf_available:
                 import tensorflow as tf
                 self._model = tf.keras.models.load_model(config.MODEL_PATH)
                 logger.info("Keras model loaded from %s.", config.MODEL_PATH)

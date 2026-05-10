@@ -23,7 +23,7 @@ LOG_BACKUP_COUNT: int = 3
 
 # Forecasting — storage
 DB_PATH: str = "weather_history.db"
-MODEL_PATH: str = "forecasting/lstm_model"      # Keras SavedModel directory
+MODEL_PATH: str = "forecasting/lstm_model.keras"
 SCALER_PATH: str = "forecasting/scaler_params.json"
 METRICS_PATH: str = "forecasting/metrics.json"
 
