@@ -1,8 +1,6 @@
 try:
     from .tft_display import TFTDisplay
-    from .weather_screen import WeatherScreen
-    __all__ = ['TFTDisplay', 'WeatherScreen']
+    __all__ = ['TFTDisplay']
 except ImportError:
     TFTDisplay = None
-    WeatherScreen = None
     __all__ = []
