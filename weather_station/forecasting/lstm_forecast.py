@@ -69,6 +69,10 @@ class LSTMForecaster:
                 self._model is not None
                 and self._scaler_min is not None
                 and self._data_store.count() >= config.FORECAST_MIN_READINGS
+                and os.path.exists(
+                    config.WEIGHTS_PATH if config.WEIGHTS_PATH.endswith(".npz")
+                    else config.WEIGHTS_PATH + ".npz"
+                )
             )
 
     def predict(self, recent: List[WeatherData]) -> ForecastResult:
@@ -269,10 +273,10 @@ class LSTMForecaster:
             precision, recall, f1,
         )
 
-        # Save as native Keras format (.keras)
-        os.makedirs(os.path.dirname(config.MODEL_PATH) or '.', exist_ok=True)
-        model.save(config.MODEL_PATH)
-        logger.info("Keras model saved → %s", config.MODEL_PATH)
+        # Save weights as numpy arrays — bypasses all Keras/TFLite serialization
+        os.makedirs(os.path.dirname(config.WEIGHTS_PATH) or '.', exist_ok=True)
+        np.savez(config.WEIGHTS_PATH, *model.get_weights())
+        logger.info("Model weights saved → %s", config.WEIGHTS_PATH)
 
         with self._lock:
             self._model = model
@@ -330,7 +334,7 @@ class LSTMForecaster:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _try_load_from_disk(self) -> None:
-        """Load scaler and Keras model from disk if they exist."""
+        """Load scaler and numpy weights from disk if they exist."""
         try:
             if os.path.exists(config.SCALER_PATH):
                 with open(config.SCALER_PATH, 'r') as fh:
@@ -339,10 +343,22 @@ class LSTMForecaster:
                 self._scaler_max = np.array(params['max'], dtype=np.float32)
                 logger.info("Scaler loaded from %s.", config.SCALER_PATH)
 
-            if os.path.exists(config.MODEL_PATH) and self._tf_available:
+            weights_file = config.WEIGHTS_PATH + ".npz" if not config.WEIGHTS_PATH.endswith(".npz") else config.WEIGHTS_PATH
+            if os.path.exists(weights_file) and self._tf_available:
                 import tensorflow as tf
-                self._model = tf.keras.models.load_model(config.MODEL_PATH)
-                logger.info("Keras model loaded from %s.", config.MODEL_PATH)
+                n_out = 3 * len(config.FORECAST_STEPS)
+                model = tf.keras.Sequential([
+                    tf.keras.layers.Input(shape=(config.SEQUENCE_LENGTH, 3)),
+                    tf.keras.layers.LSTM(config.LSTM_UNITS, return_sequences=True),
+                    tf.keras.layers.Dropout(0.2),
+                    tf.keras.layers.LSTM(config.LSTM_UNITS),
+                    tf.keras.layers.Dropout(0.2),
+                    tf.keras.layers.Dense(n_out),
+                ])
+                data = np.load(weights_file, allow_pickle=False)
+                model.set_weights([data[f'arr_{i}'] for i in range(len(data.files))])
+                self._model = model
+                logger.info("Model loaded from weights → %s", weights_file)
         except Exception as exc:
             logger.warning("Could not load model/scaler from disk: %s", exc)
 

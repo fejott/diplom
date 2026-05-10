@@ -23,7 +23,8 @@ LOG_BACKUP_COUNT: int = 3
 
 # Forecasting — storage
 DB_PATH: str = "weather_history.db"
-MODEL_PATH: str = "forecasting/lstm_model.h5"
+MODEL_PATH: str = "forecasting/lstm_model.h5"     # kept for reference
+WEIGHTS_PATH: str = "forecasting/lstm_weights.npz" # numpy weights (no TF serialization)
 SCALER_PATH: str = "forecasting/scaler_params.json"
 METRICS_PATH: str = "forecasting/metrics.json"
 
