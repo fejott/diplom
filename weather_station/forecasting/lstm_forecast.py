@@ -300,8 +300,9 @@ class LSTMForecaster:
         current_count    = self._data_store.count()
         time_since_train = time.monotonic() - self._last_train_time
 
+        first_run       = self._last_train_time == 0.0
         enough_new_data = current_count >= self._last_train_count + config.RETRAIN_THRESHOLD
-        enough_time     = time_since_train >= config.LSTM_RETRAIN_INTERVAL
+        enough_time     = first_run or time_since_train >= config.LSTM_RETRAIN_INTERVAL
 
         if not (enough_new_data and enough_time):
             return
