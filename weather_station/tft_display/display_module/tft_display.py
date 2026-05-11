@@ -269,7 +269,7 @@ class TFTDisplay:
         elif method == 'lstm':
             label, col = '🤖 Авт. LSTM',     C['purple']
         elif method == 'rule-based':
-            if internet is False:
+            if internet is False and config.ONLINE_FORECAST_ENABLED:
                 label = '📡 Правила: нет сети'
             else:
                 label = '📡 Правила'

@@ -146,7 +146,8 @@ def _append_forecast(lines: list[str], forecast, data_count: int) -> None:
     elif method == "lstm":
         lines.append(_row("🤖 ПРОГНОЗ (Авт. LSTM)"))
     elif method == "rule-based":
-        if internet is False:
+        import config as _cfg
+        if internet is False and _cfg.ONLINE_FORECAST_ENABLED:
             lines.append(_row("📊 ПРОГНОЗ (нет интернета)"))
         else:
             lines.append(_row("📊 ПРОГНОЗ (По правилам)"))
