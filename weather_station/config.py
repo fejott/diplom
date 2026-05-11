@@ -49,6 +49,7 @@ LSTM_RETRAIN_INTERVAL: int = 10800  # seconds between retrains (3 hours)
 RETRAIN_THRESHOLD: int = 100        # new readings needed to trigger a retrain
 
 # Online / hybrid forecasting
+ONLINE_FORECAST_ENABLED: bool = True   # set False to force LSTM-only mode
 INTERNET_CHECK_URL: str      = "https://api.open-meteo.com"
 INTERNET_CHECK_TIMEOUT: int  = 3     # seconds
 INTERNET_CHECK_CACHE_SEC: int = 60   # cache availability result for N seconds

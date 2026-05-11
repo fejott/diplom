@@ -113,7 +113,7 @@ class HybridForecaster:
             :class:`HybridForecastResult` from whichever engine succeeded.
         """
         gps_valid = validate_gps_for_forecast(gps)
-        internet  = self._online.is_available()
+        internet  = config.ONLINE_FORECAST_ENABLED and self._online.is_available()
 
         # ── 1. Online API ─────────────────────────────────────────────────────
         if internet and gps_valid:
