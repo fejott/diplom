@@ -219,7 +219,11 @@ class LSTMForecaster:
         X_tr, X_v = X[:split], X[split:]
         y_tr, y_v = y[:split], y[split:]
 
-        model    = self._build_and_train_keras(X_tr, y_tr, X_v, y_v)
+        with self._lock:
+            warm_weights = (self._model.get_weights()
+                            if self._model is not None else None)
+
+        model    = self._build_and_train_keras(X_tr, y_tr, X_v, y_v, warm_weights)
         val_loss = float(model.evaluate(X_v, y_v, verbose=0))
         self._last_val_loss = val_loss
 
@@ -423,7 +427,7 @@ class LSTMForecaster:
         return result[valid_rows].astype(np.float32)
 
     @staticmethod
-    def _build_and_train_keras(X_train, y_train, X_val, y_val):
+    def _build_and_train_keras(X_train, y_train, X_val, y_val, warm_weights=None):
         import tensorflow as tf
 
         n_out = 3 * len(config.FORECAST_STEPS)
@@ -437,6 +441,13 @@ class LSTMForecaster:
             tf.keras.layers.Dense(n_out),
         ])
         model.compile(optimizer='adam', loss='mse')
+
+        if warm_weights is not None:
+            try:
+                model.set_weights(warm_weights)
+                logger.info("Warm start: loaded weights from previous model.")
+            except Exception as exc:
+                logger.warning("Warm start failed, using random init: %s", exc)
 
         callbacks = [
             tf.keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),

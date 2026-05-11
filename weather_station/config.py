@@ -45,7 +45,7 @@ FILTER_PRESSURE_MAX: float = 1085.0 # hPa (world record high + margin)
 FILTER_IQR_MULTIPLIER: float = 3.0  # spikes beyond Q1/Q3 ± N*IQR are removed
 
 # Forecasting — retraining schedule
-LSTM_RETRAIN_INTERVAL: int = 3600   # seconds between retrains
+LSTM_RETRAIN_INTERVAL: int = 10800  # seconds between retrains (3 hours)
 RETRAIN_THRESHOLD: int = 100        # new readings needed to trigger a retrain
 
 # Online / hybrid forecasting
