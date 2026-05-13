@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -44,6 +44,6 @@ class ForecastResult:
     pressure_in_3h: Optional[float]
     valid_until: datetime
     model_version: str
-    correction_applied:        bool           = False
-    correction_delta_temp_1h:  Optional[float] = None
-    correction_delta_pres_1h:  Optional[float] = None
+    correction_applied:        bool           = field(default=False, kw_only=True)
+    correction_delta_temp_1h:  Optional[float] = field(default=None,  kw_only=True)
+    correction_delta_pres_1h:  Optional[float] = field(default=None,  kw_only=True)
