@@ -78,23 +78,15 @@ class LSTMForecaster:
             )
 
     def predict(self, recent: List[WeatherData]) -> ForecastResult:
-        """Run Keras inference on hourly-resampled recent readings.
-
-        Resamples *recent* to hourly averages first; requires at least
-        SEQUENCE_LENGTH complete hours (24) before returning a real forecast.
+        """Run Keras inference on the most recent raw readings.
 
         Args:
-            recent: Chronological list of raw WeatherData readings.
+            recent: Chronological list of WeatherData (at least SEQUENCE_LENGTH items).
 
         Returns:
-            ForecastResult with method="lstm", or an insufficient-data result.
+            ForecastResult with method="lstm", or a rule-based/insufficient result.
         """
-        hourly = self._resample_to_hourly(recent)
-        if len(hourly) < config.SEQUENCE_LENGTH:
-            logger.warning(
-                "LSTM: only %d hourly averages available, need %d.",
-                len(hourly), config.SEQUENCE_LENGTH,
-            )
+        if len(recent) < config.SEQUENCE_LENGTH:
             return self._insufficient_data_result()
 
         try:
@@ -106,16 +98,16 @@ class LSTMForecaster:
             if model is None:
                 raise RuntimeError("Model not loaded")
 
-            # Build (1, 24, 3) input from the last 24 hourly averages
+            # Build (1, seq_len, 3) input tensor from last SEQUENCE_LENGTH readings
             raw = np.array(
                 [[r.temperature, r.humidity, r.pressure]
-                 for r in hourly[-config.SEQUENCE_LENGTH:]],
+                 for r in recent[-config.SEQUENCE_LENGTH:]],
                 dtype=np.float32,
             )
             rng           = scaler_max - scaler_min
             rng[rng == 0] = 1.0
             norm          = (raw - scaler_min) / rng
-            inp           = norm[np.newaxis]  # (1, 24, 3)
+            inp           = norm[np.newaxis]  # (1, seq_len, 3)
 
             output = model(inp, training=False).numpy()[0]  # (9,)
 
@@ -128,7 +120,7 @@ class LSTMForecaster:
             temp_1h, temp_2h, temp_3h = (float(p[0]) for p in preds)
             pres_1h, pres_2h, pres_3h = (float(p[2]) for p in preds)
 
-            current_pressure = hourly[-1].pressure
+            current_pressure = recent[-1].pressure
             pressure_trend   = pres_3h - current_pressure
             forecast_text    = self._trend_to_text(pressure_trend)
             confidence       = max(0.0, min(1.0, 1.0 - self._last_val_loss))
@@ -181,49 +173,36 @@ class LSTMForecaster:
             logger.error("TensorFlow import failed in training thread: %s", exc)
             return {}
 
-        if len(readings) < config.FORECAST_MIN_READINGS:
-            logger.warning("train(): not enough raw readings (%d < %d).",
-                           len(readings), config.FORECAST_MIN_READINGS)
+        if len(readings) < config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 10:
+            logger.warning("train(): not enough readings (%d).", len(readings))
             return {}
 
-        # Time-based 70/30 split — avoids count bias from variable collection rates
-        # (early data was recorded at ~2–5 s; later at 30 s; split by count
-        # would assign only a few hours to training).
-        t_start  = readings[0].timestamp
-        t_end    = readings[-1].timestamp
-        span_sec = (t_end - t_start).total_seconds()
+        # Time-based 70/30 split — avoids count bias from variable collection rates.
+        # Early data was recorded at ~2–5 s intervals; later at 30 s.
+        # Splitting by count index assigns only a few hours to training.
+        t_start   = readings[0].timestamp
+        t_end     = readings[-1].timestamp
+        span_sec  = (t_end - t_start).total_seconds()
         cutoff_dt = t_start + timedelta(seconds=span_sec * (1.0 - config.VALIDATION_SPLIT))
         train_raw = [r for r in readings if r.timestamp < cutoff_dt]
+        n_held    = sum(1 for r in readings if r.timestamp >= cutoff_dt)
 
-        # Resample training readings to hourly averages; cap to LSTM_MAX_TRAIN_READINGS
-        # hours (effectively unlimited at current data volumes).
-        hourly = self._resample_to_hourly(train_raw)
-        hourly = hourly[-config.LSTM_MAX_TRAIN_READINGS:]
-
-        n_held_h = len(self._resample_to_hourly(
-            [r for r in readings if r.timestamp >= cutoff_dt]
-        ))
+        train_raw = train_raw[-config.LSTM_MAX_TRAIN_READINGS:]
         logger.info(
-            "LSTM training on %d hourly averages (train span %.1f h; held-out ~%d h).",
-            len(hourly),
+            "LSTM training on %d raw readings (train span %.1f h; held-out %d raw).",
+            len(train_raw),
             (cutoff_dt - t_start).total_seconds() / 3600,
-            n_held_h,
+            n_held,
         )
 
-        min_hourly = config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 2
-        if len(hourly) < min_hourly:
-            logger.warning("train(): too few hourly averages (%d < %d).",
-                           len(hourly), min_hourly)
-            return {}
-
-        # Feature matrix from hourly data
+        # Feature matrix
         data = np.array(
-            [[r.temperature, r.humidity, r.pressure] for r in hourly],
+            [[r.temperature, r.humidity, r.pressure] for r in train_raw],
             dtype=np.float32,
         )
         data = self._filter_data(data)
-        if len(data) < min_hourly:
-            logger.warning("train(): too few hourly readings after filtering (%d).", len(data))
+        if len(data) < config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 10:
+            logger.warning("train(): too few readings after filtering (%d).", len(data))
             return {}
         s_min = data.min(axis=0)
         s_max = data.max(axis=0)

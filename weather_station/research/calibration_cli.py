@@ -192,50 +192,26 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     n_steps = len(steps)
 
     print("═" * 65)
-    print("  ВАЛИДАЦИЯ НА ОТЛОЖЕННОЙ ВЫБОРКЕ (часовые средние)")
+    print("  ВАЛИДАЦИЯ НА ОТЛОЖЕННОЙ ВЫБОРКЕ")
     print("═" * 65)
     print(f"  Всего записей:   {n_total}")
     print(f"  Обучение (70%):  {n_train_raw} зап. (до {cutoff_ts[:16]})")
     print(f"  Отложено (30%):  {n_held_raw} зап. (с  {cutoff_ts[:16]})")
 
-    # ── 2. Resample held-out raw readings to hourly averages ──────────────────
-    from collections import defaultdict
-
+    # ── 2. Build raw held-out array ───────────────────────────────────────────
     held_raw = [r for r in all_rows if r[0] >= cutoff_ts]
-    hour_groups: dict = defaultdict(list)
-    for r in held_raw:
-        try:
-            dt = _dt2.fromisoformat(r[0])
-            hk = dt.replace(minute=0, second=0, microsecond=0)
-        except Exception:
-            continue
-        hour_groups[hk].append((r[1], r[2], r[3]))  # temp, hum, pres
+    n_held_raw = len(held_raw)
 
-    hourly_held = []   # list of (temp, hum, pres, ts_str)
-    for hk in sorted(hour_groups.keys()):
-        grp = hour_groups[hk]
-        n   = len(grp)
-        hourly_held.append((
-            sum(g[0] for g in grp) / n,
-            sum(g[1] for g in grp) / n,
-            sum(g[2] for g in grp) / n,
-            hk.isoformat(),
-        ))
-
-    n_hourly = len(hourly_held)
-    print(f"  Часовых средних (отложено): {n_hourly}")
-
-    min_needed = seq + max(steps) + 2
-    if n_hourly < min_needed:
-        print(f"\n  Отложенных часов слишком мало: {n_hourly} < {min_needed}")
+    min_needed = seq + max(steps) + 10
+    if n_held_raw < min_needed:
+        print(f"\n  Отложенная выборка слишком мала: {n_held_raw} < {min_needed}")
         return
 
-    # ── 3. Build hourly numpy arrays ──────────────────────────────────────────
-    data_h = np.array(
-        [[r[0], r[1], r[2]] for r in hourly_held], dtype=np.float32
-    )  # (n_hourly, 3): [temp, hum, pres]
+    data_raw = np.array(
+        [[r[1], r[2], r[3]] for r in held_raw], dtype=np.float32
+    )  # (n_held, 3): [temp, hum, pres]
 
-    # ── 4. Load scaler ────────────────────────────────────────────────────────
+    # ── 3. Load scaler ────────────────────────────────────────────────────────
     if not os.path.exists(config.SCALER_PATH):
         print("  Scaler не найден — LSTM ещё не обучен.")
         return
@@ -245,9 +221,9 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     s_max = np.array(sc["max"], dtype=np.float32)
     rng   = s_max - s_min
     rng[rng == 0] = 1.0
-    norm  = (data_h - s_min) / rng
+    norm  = (data_raw - s_min) / rng
 
-    # ── 5. Load LSTM model ────────────────────────────────────────────────────
+    # ── 4. Load LSTM model ────────────────────────────────────────────────────
     weights_file = config.WEIGHTS_PATH
     if not weights_file.endswith(".npz"):
         weights_file += ".npz"
@@ -274,18 +250,18 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         print(f"  Ошибка загрузки модели: {exc}")
         return
 
-    # ── 6. Build sequences from hourly held-out data ──────────────────────────
-    n_seqs = n_hourly - seq - max(steps)
+    # ── 5. Build sequences from raw held-out data ─────────────────────────────
+    n_seqs = n_held_raw - seq - max(steps)
     X_list, y_list, ts_list = [], [], []
     for i in range(n_seqs):
         X_list.append(norm[i: i + seq])
         targets = []
         for st in steps:
-            targets.extend(data_h[i + seq + st - 1])
+            targets.extend(data_raw[i + seq + st - 1])
         y_list.append(targets)
-        ts_list.append(hourly_held[i + seq][3])  # forecast timestamp
+        ts_list.append(held_raw[i + seq][0])  # forecast timestamp
 
-    X      = np.array(X_list, dtype=np.float32)   # (n_seqs, 24, 3)
+    X      = np.array(X_list, dtype=np.float32)   # (n_seqs, seq, 3)
     y_true = np.array(y_list, dtype=np.float32)   # (n_seqs, n_steps*3)
 
     print(f"  Последовательностей для оценки: {n_seqs}")
@@ -330,8 +306,8 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         sin_dow  = np.sin(2 * np.pi * weekdays /  7).astype(np.float32)
         cos_dow  = np.cos(2 * np.pi * weekdays /  7).astype(np.float32)
 
-        # Current pressure at the time of each forecast (last hour of context)
-        cur_pres   = data_h[seq - 1: seq - 1 + n_seqs, 2]          # (n_seqs,)
+        # Current pressure at the time of each forecast (last reading of context)
+        cur_pres   = data_raw[seq - 1: seq - 1 + n_seqs, 2]        # (n_seqs,)
         pres_trend = y_pred[:, (n_steps - 1) * 3 + 2] - cur_pres   # (n_seqs,)
 
         X_corr = np.column_stack([
@@ -402,8 +378,8 @@ def cmd_validate(_args: argparse.Namespace) -> None:
 
     print()
     print("═" * 65)
-    print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {hourly_held[-1][3][:16]}")
-    print(f"  Образцов (часовых посл.): {n_seqs}")
+    print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {held_raw[-1][0][:16]}")
+    print(f"  Образцов: {n_seqs}")
     print("─" * 65)
     print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
     print(f"  {'MAE (°C)':<10} {'─'*16} {'─'*16} {'─'*16}")
