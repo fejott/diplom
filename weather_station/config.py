@@ -29,8 +29,8 @@ SCALER_PATH: str = "forecasting/scaler_params.json"
 METRICS_PATH: str = "forecasting/metrics.json"
 
 # Forecasting — LSTM
-SEQUENCE_LENGTH: int = 72           # number of readings fed to the model
-FORECAST_STEPS: list = [36, 72, 216]  # reading-offsets for +1h/+2h/+3h predictions
+SEQUENCE_LENGTH: int = 120          # number of readings fed to the model (1h at 30s)
+FORECAST_STEPS: list = [120, 240, 360]  # reading-offsets for +1h/+2h/+3h at 30s interval
 FORECAST_MIN_READINGS: int = 500    # min DB rows before LSTM is considered ready
 LSTM_UNITS: int = 16
 LSTM_LAYERS: int = 2
