@@ -9,6 +9,7 @@ No pandas required — keeps the Pi dependency footprint small.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import pathlib
 import sqlite3
@@ -194,6 +195,45 @@ class ReportGenerator:
             ]
 
         lines.append("═" * 60)
+        return "\n".join(lines)
+
+    def correction_impact(self) -> str:
+        """Show before/after MAE from the correction model meta file."""
+        try:
+            import config
+            meta_path = config.CORRECTION_META_PATH
+        except Exception:
+            return ""
+
+        if not pathlib.Path(meta_path).exists():
+            return "Модель коррекции не обучена"
+
+        try:
+            with open(meta_path, "r") as fh:
+                meta = json.load(fh)
+        except Exception as exc:
+            return f"Ошибка чтения мета-файла коррекции: {exc}"
+
+        trained_at = meta.get("trained_at", "?")[:16]
+        n          = meta.get("n_samples", "?")
+        mae_before = meta.get("mae_before")
+        mae_after  = meta.get("mae_after")
+
+        lines = [
+            "═" * 50,
+            "  МОДЕЛЬ КОРРЕКЦИИ",
+            "═" * 50,
+            f"  Обучена:        {trained_at} UTC",
+            f"  Обучающих строк: {n}",
+        ]
+        if mae_before is not None:
+            lines.append(f"  MAE до:         {mae_before:.4f}°C (темп +1ч)")
+        if mae_after is not None:
+            lines.append(f"  MAE после:      {mae_after:.4f}°C (темп +1ч)")
+        if mae_before is not None and mae_after is not None and mae_before > 0:
+            improvement = (mae_before - mae_after) / mae_before * 100
+            lines.append(f"  Улучшение:      {improvement:+.1f}%")
+        lines.append("═" * 50)
         return "\n".join(lines)
 
     def timing_summary(self) -> str:

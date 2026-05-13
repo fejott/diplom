@@ -28,10 +28,13 @@ _DB_PATH = pathlib.Path(__file__).resolve().parent / "research_data.db"
 _SENSOR_INTERVAL_SEC = 600   # log_sensor fires at most once per 10 minutes
 
 # Column-name lookup for verify_forecasts — avoids dynamic f-strings over user data
-_HOUR_COLS: dict[int, tuple[str, str, str, str, str]] = {
-    1: ("temp_1h", "pressure_1h", "error_temp_1h", "error_pressure_1h", "verified_1h"),
-    2: ("temp_2h", "pressure_2h", "error_temp_2h", "error_pressure_2h", "verified_2h"),
-    3: ("temp_3h", "pressure_3h", "error_temp_3h", "error_pressure_3h", "verified_3h"),
+_HOUR_COLS: dict[int, tuple] = {
+    1: ("temp_1h", "pressure_1h", "error_temp_1h", "error_pressure_1h", "verified_1h",
+        "signed_error_temp_1h", "signed_error_pres_1h"),
+    2: ("temp_2h", "pressure_2h", "error_temp_2h", "error_pressure_2h", "verified_2h",
+        "signed_error_temp_2h", "signed_error_pres_2h"),
+    3: ("temp_3h", "pressure_3h", "error_temp_3h", "error_pressure_3h", "verified_3h",
+        "signed_error_temp_3h", "signed_error_pres_3h"),
 }
 
 _DDL = """
@@ -80,7 +83,13 @@ CREATE TABLE IF NOT EXISTS forecast_verification (
     error_pressure_3h REAL,
     verified_1h       INTEGER DEFAULT 0,
     verified_2h       INTEGER DEFAULT 0,
-    verified_3h       INTEGER DEFAULT 0
+    verified_3h       INTEGER DEFAULT 0,
+    signed_error_temp_1h  REAL,
+    signed_error_temp_2h  REAL,
+    signed_error_temp_3h  REAL,
+    signed_error_pres_1h  REAL,
+    signed_error_pres_2h  REAL,
+    signed_error_pres_3h  REAL
 );
 
 CREATE TABLE IF NOT EXISTS lstm_training_log (
@@ -131,6 +140,12 @@ class ResearchCollector:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_DDL)
+            for _col in ["signed_error_temp_1h", "signed_error_temp_2h", "signed_error_temp_3h",
+                         "signed_error_pres_1h", "signed_error_pres_2h", "signed_error_pres_3h"]:
+                try:
+                    conn.execute(f"ALTER TABLE forecast_verification ADD COLUMN {_col} REAL")
+                except Exception:
+                    pass  # already exists
             conn.commit()
             self._conn = conn
             logger.info("ResearchCollector ready → %s", self._db_path)
@@ -217,7 +232,7 @@ class ResearchCollector:
             act_pres = current_weather.pressure
 
             with self._lock:
-                for hours, (tc, pc, etc, epc, vc) in _HOUR_COLS.items():
+                for hours, (tc, pc, etc, epc, vc, setc, sepc) in _HOUR_COLS.items():
                     target = now - timedelta(hours=hours)
                     lower  = (target - timedelta(minutes=2)).isoformat()
                     upper  = (target + timedelta(minutes=2)).isoformat()
@@ -258,9 +273,13 @@ class ResearchCollector:
                         self._conn.execute(
                             f"UPDATE forecast_verification SET "
                             f"  verified_at=?, actual_temp=?, actual_pressure=?, "
-                            f"  {etc}=?, {epc}=?, {vc}=1 "
+                            f"  {etc}=?, {epc}=?, {vc}=1, "
+                            f"  {setc}=?, {sepc}=? "
                             f"WHERE forecast_id=?",
-                            (now_s, act_temp, act_pres, err_t, err_p, fid),
+                            (now_s, act_temp, act_pres, err_t, err_p,
+                             round(act_temp - pred_t, 4) if pred_t is not None else None,
+                             round(act_pres - pred_p, 4) if pred_p is not None else None,
+                             fid),
                         )
 
                 self._conn.commit()

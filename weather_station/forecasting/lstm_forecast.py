@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import numpy as np
 
 import config
+from forecasting.correction_model import CorrectionModel
 from forecasting.forecast_result import ForecastResult
 from sensors.bme280_sensor import WeatherData
 from utils.logger import get_logger
@@ -58,6 +59,7 @@ class LSTMForecaster:
         except Exception as exc:
             logger.warning("TensorFlow not available — LSTM training disabled: %s", exc)
 
+        self._correction = CorrectionModel()
         self._try_load_from_disk()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -126,7 +128,7 @@ class LSTMForecaster:
             confidence       = max(0.0, min(1.0, 1.0 - self._last_val_loss))
 
             pp = self._pressure_drop_to_precip_prob
-            return ForecastResult(
+            result = ForecastResult(
                 method="lstm",
                 forecast_text=forecast_text,
                 confidence=confidence,
@@ -143,6 +145,12 @@ class LSTMForecaster:
                 valid_until=datetime.now() + timedelta(hours=3),
                 model_version="lstm_v1",
             )
+
+            # Apply residual correction if model is ready
+            if self._correction.is_ready():
+                deltas = self._correction.predict_correction(result)
+                result = self._correction.apply_correction(result, deltas)
+            return result
 
         except Exception as exc:
             logger.error("LSTM predict error — falling back to rules: %s", exc)

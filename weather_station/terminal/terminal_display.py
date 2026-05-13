@@ -143,8 +143,11 @@ def _append_forecast(lines: list[str], forecast, data_count: int) -> None:
     # ── Mode header ─────────────────────────────────────────────────────────
     if method == "online_api":
         lines.append(_row("🌐 ПРОГНОЗ (Online API)"))
-    elif method == "lstm":
-        lines.append(_row("🤖 ПРОГНОЗ (Авт. LSTM)"))
+    elif method in ("lstm", "lstm_corrected"):
+        if method == "lstm_corrected":
+            lines.append(_row("🤖 LSTM + локальная коррекция"))
+        else:
+            lines.append(_row("🤖 ПРОГНОЗ (Авт. LSTM)"))
     elif method == "rule-based":
         import config as _cfg
         if internet is False and _cfg.ONLINE_FORECAST_ENABLED:
@@ -170,6 +173,19 @@ def _append_forecast(lines: list[str], forecast, data_count: int) -> None:
         else:
             p_str = "   N/A"
         lines.append(_row(f" +{h}ч   {t_str:>6}   {p_str}"))
+
+    # ── Correction delta (if applied) ────────────────────────────────────────
+    correction_applied = getattr(forecast, 'correction_applied', False)
+    if correction_applied:
+        delta_t = getattr(forecast, 'correction_delta_temp_1h', None)
+        delta_p = getattr(forecast, 'correction_delta_pres_1h', None)
+        parts = []
+        if delta_t is not None:
+            parts.append(f"{'%+.1f' % delta_t}°C")
+        if delta_p is not None:
+            parts.append(f"{'%+.1f' % delta_p}hPa")
+        if parts:
+            lines.append(_row(f"  Коррекция +1ч: {' / '.join(parts)}"))
 
     # ── Pressure trend ───────────────────────────────────────────────────────
     arrow = _pressure_arrow(forecast.pressure_trend)

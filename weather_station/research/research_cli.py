@@ -101,6 +101,10 @@ def cmd_report(_args: argparse.Namespace) -> None:
     print(rg.timing_summary())
     print()
     print(rg.lstm_progress())
+    impact = rg.correction_impact()
+    if impact:
+        print()
+        print(impact)
 
 
 def cmd_export(_args: argparse.Namespace) -> None:

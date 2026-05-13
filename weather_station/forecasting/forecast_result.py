@@ -29,7 +29,7 @@ class ForecastResult:
         model_version:   String tag identifying the model ("lstm_v1", "rule_v1").
     """
 
-    method: Literal["lstm", "rule-based", "insufficient_data", "online_api"]
+    method: Literal["lstm", "lstm_corrected", "rule-based", "insufficient_data", "online_api"]
     forecast_text: str
     confidence: float
     pressure_trend: float
@@ -44,3 +44,6 @@ class ForecastResult:
     pressure_in_3h: Optional[float]
     valid_until: datetime
     model_version: str
+    correction_applied:        bool           = False
+    correction_delta_temp_1h:  Optional[float] = None
+    correction_delta_pres_1h:  Optional[float] = None

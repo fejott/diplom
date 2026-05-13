@@ -56,3 +56,13 @@ INTERNET_CHECK_CACHE_SEC: int = 60   # cache availability result for N seconds
 API_FETCH_CACHE_SEC: int     = 600   # cache forecast response for N seconds (10 min)
 API_FORECAST_HOURS: int      = 3     # hours ahead to request from Open-Meteo
 OPEN_METEO_BASE_URL: str     = "https://api.open-meteo.com/v1/forecast"
+
+# Correction model
+CORRECTION_DIR: str           = "forecasting/correction"
+CORRECTION_WEIGHTS_PATH: str  = "forecasting/correction/correction_weights.npz"
+CORRECTION_SCALER_PATH: str   = "forecasting/correction/correction_scaler.json"
+CORRECTION_META_PATH: str     = "forecasting/correction/correction_meta.json"
+CORRECTION_MIN_VERIFIED: int  = 200
+CORRECTION_EPOCHS: int        = 50
+CORRECTION_LR: float          = 0.001
+CORRECTION_PATIENCE: int      = 7
