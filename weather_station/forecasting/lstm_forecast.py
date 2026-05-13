@@ -78,17 +78,23 @@ class LSTMForecaster:
             )
 
     def predict(self, recent: List[WeatherData]) -> ForecastResult:
-        """Run Keras inference on the most recent readings.
+        """Run Keras inference on hourly-resampled recent readings.
 
-        Falls back to RuleForecaster on any error.
+        Resamples *recent* to hourly averages first; requires at least
+        SEQUENCE_LENGTH complete hours (24) before returning a real forecast.
 
         Args:
-            recent: Chronological list of WeatherData (at least SEQUENCE_LENGTH items).
+            recent: Chronological list of raw WeatherData readings.
 
         Returns:
-            ForecastResult with method="lstm", or a rule-based/insufficient result.
+            ForecastResult with method="lstm", or an insufficient-data result.
         """
-        if len(recent) < config.SEQUENCE_LENGTH:
+        hourly = self._resample_to_hourly(recent)
+        if len(hourly) < config.SEQUENCE_LENGTH:
+            logger.warning(
+                "LSTM: only %d hourly averages available, need %d.",
+                len(hourly), config.SEQUENCE_LENGTH,
+            )
             return self._insufficient_data_result()
 
         try:
@@ -100,16 +106,16 @@ class LSTMForecaster:
             if model is None:
                 raise RuntimeError("Model not loaded")
 
-            # Build (1, seq_len, 3) input tensor
+            # Build (1, 24, 3) input from the last 24 hourly averages
             raw = np.array(
                 [[r.temperature, r.humidity, r.pressure]
-                 for r in recent[-config.SEQUENCE_LENGTH:]],
+                 for r in hourly[-config.SEQUENCE_LENGTH:]],
                 dtype=np.float32,
             )
             rng           = scaler_max - scaler_min
             rng[rng == 0] = 1.0
             norm          = (raw - scaler_min) / rng
-            inp           = norm[np.newaxis]  # (1, seq_len, 3)
+            inp           = norm[np.newaxis]  # (1, 24, 3)
 
             output = model(inp, training=False).numpy()[0]  # (9,)
 
@@ -122,7 +128,7 @@ class LSTMForecaster:
             temp_1h, temp_2h, temp_3h = (float(p[0]) for p in preds)
             pres_1h, pres_2h, pres_3h = (float(p[2]) for p in preds)
 
-            current_pressure = recent[-1].pressure
+            current_pressure = hourly[-1].pressure
             pressure_trend   = pres_3h - current_pressure
             forecast_text    = self._trend_to_text(pressure_trend)
             confidence       = max(0.0, min(1.0, 1.0 - self._last_val_loss))
@@ -175,25 +181,38 @@ class LSTMForecaster:
             logger.error("TensorFlow import failed in training thread: %s", exc)
             return {}
 
-        if len(readings) < config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 10:
-            logger.warning("train(): not enough readings (%d).", len(readings))
+        if len(readings) < config.FORECAST_MIN_READINGS:
+            logger.warning("train(): not enough raw readings (%d < %d).",
+                           len(readings), config.FORECAST_MIN_READINGS)
             return {}
 
         # Reserve last VALIDATION_SPLIT fraction for held-out validation
-        cutoff = int(len(readings) * (1.0 - config.VALIDATION_SPLIT))
-        readings = readings[:cutoff]
-        readings = readings[-config.LSTM_MAX_TRAIN_READINGS:]
-        logger.info("LSTM training started on %d readings (held-out: %d).",
-                    len(readings), len(readings) - cutoff if cutoff < len(readings) else 0)
+        cutoff       = int(len(readings) * (1.0 - config.VALIDATION_SPLIT))
+        train_raw    = readings[:cutoff]
+        train_raw    = train_raw[-config.LSTM_MAX_TRAIN_READINGS:]
 
-        # Feature matrix
+        # Resample raw readings to hourly averages
+        hourly = self._resample_to_hourly(train_raw)
+        n_held_h = len(self._resample_to_hourly(readings[cutoff:]))
+        logger.info(
+            "LSTM training on %d hourly averages (from %d raw; held-out ~%d hours).",
+            len(hourly), len(train_raw), n_held_h,
+        )
+
+        min_hourly = config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 2
+        if len(hourly) < min_hourly:
+            logger.warning("train(): too few hourly averages (%d < %d).",
+                           len(hourly), min_hourly)
+            return {}
+
+        # Feature matrix from hourly data
         data = np.array(
-            [[r.temperature, r.humidity, r.pressure] for r in readings],
+            [[r.temperature, r.humidity, r.pressure] for r in hourly],
             dtype=np.float32,
         )
         data = self._filter_data(data)
-        if len(data) < config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 10:
-            logger.warning("train(): too few readings after filtering (%d).", len(data))
+        if len(data) < min_hourly:
+            logger.warning("train(): too few hourly readings after filtering (%d).", len(data))
             return {}
         s_min = data.min(axis=0)
         s_max = data.max(axis=0)
@@ -383,6 +402,40 @@ class LSTMForecaster:
                 logger.info("Model loaded from weights → %s", weights_file)
         except Exception as exc:
             logger.warning("Could not load model/scaler from disk: %s", exc)
+
+    @staticmethod
+    def _resample_to_hourly(readings: List[WeatherData]) -> List[WeatherData]:
+        """Group raw readings by calendar hour and return per-hour averages.
+
+        Args:
+            readings: Chronological list of raw WeatherData (any interval).
+
+        Returns:
+            Sorted list of WeatherData with one entry per complete hour.
+            Hours with zero readings are skipped.
+        """
+        from collections import defaultdict
+
+        if not readings:
+            return []
+
+        groups: dict = defaultdict(list)
+        for r in readings:
+            hour_key = r.timestamp.replace(minute=0, second=0, microsecond=0)
+            groups[hour_key].append(r)
+
+        hourly: List[WeatherData] = []
+        for hour_key in sorted(groups.keys()):
+            grp = groups[hour_key]
+            n   = len(grp)
+            hourly.append(WeatherData(
+                temperature=round(sum(r.temperature for r in grp) / n, 4),
+                humidity   =round(sum(r.humidity    for r in grp) / n, 4),
+                pressure   =round(sum(r.pressure    for r in grp) / n, 4),
+                pressure_sl=round(sum(r.pressure_sl for r in grp) / n, 4),
+                timestamp  =hour_key,
+            ))
+        return hourly
 
     @staticmethod
     def _filter_data(data: np.ndarray) -> np.ndarray:
