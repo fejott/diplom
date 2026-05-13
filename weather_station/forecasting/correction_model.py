@@ -367,20 +367,25 @@ class CorrectionModel:
     def _get_training_cutoff_ts(self) -> Optional[str]:
         """Return the ISO timestamp at the training/held-out split boundary.
 
-        Reads ``config.DB_PATH`` (weather_history.db), takes the row at
-        index ``int(N * (1 - VALIDATION_SPLIT))``, and returns its timestamp.
+        Uses a time-based 70/30 split (same logic as LSTMForecaster.train)
+        to avoid count bias from variable-rate data collection.
         Returns None on any error.
         """
         try:
+            from datetime import timedelta
             with sqlite3.connect(config.DB_PATH) as conn:
-                ts_rows = conn.execute(
-                    "SELECT timestamp FROM readings ORDER BY id"
-                ).fetchall()
-            if not ts_rows:
+                row_first, row_last = conn.execute(
+                    "SELECT MIN(timestamp), MAX(timestamp) FROM readings"
+                ).fetchone()
+            if not row_first or not row_last:
                 return None
-            cutoff_idx = int(len(ts_rows) * (1.0 - config.VALIDATION_SPLIT))
-            cutoff_idx = min(cutoff_idx, len(ts_rows) - 1)
-            return ts_rows[cutoff_idx][0]
+            t_start  = datetime.fromisoformat(row_first)
+            t_end    = datetime.fromisoformat(row_last)
+            span_sec = (t_end - t_start).total_seconds()
+            cutoff_dt = t_start + timedelta(
+                seconds=span_sec * (1.0 - config.VALIDATION_SPLIT)
+            )
+            return cutoff_dt.isoformat()
         except Exception as exc:
             logger.warning("_get_training_cutoff_ts error: %s", exc)
             return None

@@ -153,6 +153,7 @@ def cmd_rollback_correction(_args: argparse.Namespace) -> None:
 def cmd_validate(_args: argparse.Namespace) -> None:
     """Held-out validation: Base LSTM vs LSTM+Correction vs Online API."""
     import sqlite3
+    from datetime import datetime as _dt2
 
     import numpy as np
 
@@ -174,26 +175,33 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         print(f"  Недостаточно данных: {n_total} < {config.FORECAST_MIN_READINGS}")
         return
 
-    cutoff_idx = int(n_total * (1.0 - config.VALIDATION_SPLIT))
-    cutoff_ts  = all_rows[cutoff_idx][0]
-    n_held_raw = n_total - cutoff_idx
+    from datetime import timedelta
 
-    seq     = config.SEQUENCE_LENGTH   # 24 hourly steps
+    # Time-based 70/30 split (mirrors lstm_forecast.py train() logic)
+    t_start  = _dt2.fromisoformat(all_rows[0][0])
+    t_end    = _dt2.fromisoformat(all_rows[-1][0])
+    span_sec = (t_end - t_start).total_seconds()
+    cutoff_dt = t_start + timedelta(seconds=span_sec * (1.0 - config.VALIDATION_SPLIT))
+    cutoff_ts = cutoff_dt.isoformat()
+
+    n_train_raw = sum(1 for r in all_rows if r[0] < cutoff_ts)
+    n_held_raw  = n_total - n_train_raw
+
+    seq     = config.SEQUENCE_LENGTH   # hourly steps
     steps   = config.FORECAST_STEPS   # [1, 2, 3] hour offsets
     n_steps = len(steps)
 
     print("═" * 65)
     print("  ВАЛИДАЦИЯ НА ОТЛОЖЕННОЙ ВЫБОРКЕ (часовые средние)")
     print("═" * 65)
-    print(f"  Всего записей (30 с):  {n_total}")
-    print(f"  Обучение (70%):        {cutoff_idx} зап. (до {cutoff_ts[:16]})")
-    print(f"  Отложено (30%):        {n_held_raw} зап. (с  {cutoff_ts[:16]})")
+    print(f"  Всего записей:   {n_total}")
+    print(f"  Обучение (70%):  {n_train_raw} зап. (до {cutoff_ts[:16]})")
+    print(f"  Отложено (30%):  {n_held_raw} зап. (с  {cutoff_ts[:16]})")
 
     # ── 2. Resample held-out raw readings to hourly averages ──────────────────
     from collections import defaultdict
-    from datetime import datetime as _dt2
 
-    held_raw = all_rows[cutoff_idx:]
+    held_raw = [r for r in all_rows if r[0] >= cutoff_ts]
     hour_groups: dict = defaultdict(list)
     for r in held_raw:
         try:

@@ -186,17 +186,28 @@ class LSTMForecaster:
                            len(readings), config.FORECAST_MIN_READINGS)
             return {}
 
-        # Reserve last VALIDATION_SPLIT fraction for held-out validation
-        cutoff       = int(len(readings) * (1.0 - config.VALIDATION_SPLIT))
-        train_raw    = readings[:cutoff]
-        train_raw    = train_raw[-config.LSTM_MAX_TRAIN_READINGS:]
+        # Time-based 70/30 split — avoids count bias from variable collection rates
+        # (early data was recorded at ~2–5 s; later at 30 s; split by count
+        # would assign only a few hours to training).
+        t_start  = readings[0].timestamp
+        t_end    = readings[-1].timestamp
+        span_sec = (t_end - t_start).total_seconds()
+        cutoff_dt = t_start + timedelta(seconds=span_sec * (1.0 - config.VALIDATION_SPLIT))
+        train_raw = [r for r in readings if r.timestamp < cutoff_dt]
 
-        # Resample raw readings to hourly averages
+        # Resample training readings to hourly averages; cap to LSTM_MAX_TRAIN_READINGS
+        # hours (effectively unlimited at current data volumes).
         hourly = self._resample_to_hourly(train_raw)
-        n_held_h = len(self._resample_to_hourly(readings[cutoff:]))
+        hourly = hourly[-config.LSTM_MAX_TRAIN_READINGS:]
+
+        n_held_h = len(self._resample_to_hourly(
+            [r for r in readings if r.timestamp >= cutoff_dt]
+        ))
         logger.info(
-            "LSTM training on %d hourly averages (from %d raw; held-out ~%d hours).",
-            len(hourly), len(train_raw), n_held_h,
+            "LSTM training on %d hourly averages (train span %.1f h; held-out ~%d h).",
+            len(hourly),
+            (cutoff_dt - t_start).total_seconds() / 3600,
+            n_held_h,
         )
 
         min_hourly = config.SEQUENCE_LENGTH + max(config.FORECAST_STEPS) + 2

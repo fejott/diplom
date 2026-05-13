@@ -29,9 +29,10 @@ SCALER_PATH: str = "forecasting/scaler_params.json"
 METRICS_PATH: str = "forecasting/metrics.json"
 
 # Forecasting — LSTM
-SEQUENCE_LENGTH: int = 24           # 24 hourly averages = 24 h of context
+SEQUENCE_LENGTH: int = 12           # 12 hourly averages = 12 h of context
+                                    # (increase to 24 once you have 2+ months of data)
 FORECAST_STEPS: list = [1, 2, 3]   # hourly offsets → +1 h / +2 h / +3 h
-FORECAST_MIN_READINGS: int = 2880  # 24 h × 120 readings/h (at 30 s interval)
+FORECAST_MIN_READINGS: int = 1440  # 12 h × 120 readings/h (at 30 s interval)
 LSTM_UNITS: int = 16
 LSTM_LAYERS: int = 2
 MAX_RAM_MB: int = 400
