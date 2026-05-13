@@ -179,8 +179,12 @@ class LSTMForecaster:
             logger.warning("train(): not enough readings (%d).", len(readings))
             return {}
 
+        # Reserve last VALIDATION_SPLIT fraction for held-out validation
+        cutoff = int(len(readings) * (1.0 - config.VALIDATION_SPLIT))
+        readings = readings[:cutoff]
         readings = readings[-config.LSTM_MAX_TRAIN_READINGS:]
-        logger.info("LSTM training started on %d readings.", len(readings))
+        logger.info("LSTM training started on %d readings (held-out: %d).",
+                    len(readings), len(readings) - cutoff if cutoff < len(readings) else 0)
 
         # Feature matrix
         data = np.array(

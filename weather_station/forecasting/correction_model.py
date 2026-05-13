@@ -130,6 +130,15 @@ class CorrectionModel:
             return CorrectionResult(False, 0, None, None,
                                     f"Ошибка чтения БД: {exc}")
 
+        # Keep only forecasts from the training period (exclude held-out data)
+        cutoff_ts = self._get_training_cutoff_ts()
+        if cutoff_ts:
+            rows = [r for r in rows if r["timestamp"] < cutoff_ts]
+            logger.info(
+                "Correction train: %d rows after cutoff filter (cutoff=%s)",
+                len(rows), cutoff_ts[:16],
+            )
+
         if len(rows) < config.CORRECTION_MIN_VERIFIED:
             return CorrectionResult(False, len(rows), None, None,
                                     f"Мало данных: {len(rows)} / {config.CORRECTION_MIN_VERIFIED}")
@@ -255,6 +264,29 @@ class CorrectionModel:
             message="Обучение завершено успешно",
         )
 
+    def predict_correction_batch(self, X: np.ndarray) -> np.ndarray:
+        """Batch-predict corrections for N samples.
+
+        Args:
+            X: (N, 11) float32 feature matrix — same column order as the
+               single-sample path: temp_1h, temp_2h, temp_3h,
+               pres_1h, pres_2h, pres_3h, pressure_trend,
+               sin_h, cos_h, sin_dow, cos_dow.
+
+        Returns:
+            (N, 6) float32 delta array, or np.zeros((N, 6)) on any error.
+        """
+        if not self._loaded:
+            return np.zeros((len(X), 6), dtype=np.float32)
+        try:
+            x_norm = (X - self._mean) / self._std
+            h1  = np.maximum(0, x_norm @ self._w1 + self._b1)
+            h2  = np.maximum(0, h1     @ self._w2 + self._b2)
+            return (h2 @ self._w3 + self._b3).astype(np.float32)
+        except Exception as exc:
+            logger.warning("predict_correction_batch error: %s", exc)
+            return np.zeros((len(X), 6), dtype=np.float32)
+
     def predict_correction(self, base_forecast) -> np.ndarray:
         """Predict residual corrections for a base forecast.
 
@@ -331,6 +363,27 @@ class CorrectionModel:
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _get_training_cutoff_ts(self) -> Optional[str]:
+        """Return the ISO timestamp at the training/held-out split boundary.
+
+        Reads ``config.DB_PATH`` (weather_history.db), takes the row at
+        index ``int(N * (1 - VALIDATION_SPLIT))``, and returns its timestamp.
+        Returns None on any error.
+        """
+        try:
+            with sqlite3.connect(config.DB_PATH) as conn:
+                ts_rows = conn.execute(
+                    "SELECT timestamp FROM readings ORDER BY id"
+                ).fetchall()
+            if not ts_rows:
+                return None
+            cutoff_idx = int(len(ts_rows) * (1.0 - config.VALIDATION_SPLIT))
+            cutoff_idx = min(cutoff_idx, len(ts_rows) - 1)
+            return ts_rows[cutoff_idx][0]
+        except Exception as exc:
+            logger.warning("_get_training_cutoff_ts error: %s", exc)
+            return None
 
     def _try_load(self) -> None:
         """Attempt to load weights and scaler from disk."""

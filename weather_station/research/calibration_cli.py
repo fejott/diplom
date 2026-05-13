@@ -5,12 +5,14 @@ Usage (from weather_station/):
     python research/calibration_cli.py correction-status
     python research/calibration_cli.py train-correction
     python research/calibration_cli.py rollback-correction
+    python research/calibration_cli.py validate
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import sys
@@ -148,6 +150,240 @@ def cmd_rollback_correction(_args: argparse.Namespace) -> None:
         print("  Файлы модели коррекции не найдены — нечего удалять.")
 
 
+def cmd_validate(_args: argparse.Namespace) -> None:
+    """Held-out validation: Base LSTM vs LSTM+Correction vs Online API."""
+    import sqlite3
+
+    import numpy as np
+
+    from forecasting.correction_model import CorrectionModel
+
+    # ── 1. Load readings from weather_history.db ──────────────────────────────
+    try:
+        with sqlite3.connect(config.DB_PATH) as conn:
+            all_rows = conn.execute(
+                "SELECT timestamp, temperature, humidity, pressure "
+                "FROM readings ORDER BY id"
+            ).fetchall()
+    except Exception as exc:
+        print(f"  Ошибка чтения {config.DB_PATH}: {exc}")
+        return
+
+    n_total = len(all_rows)
+    if n_total < config.FORECAST_MIN_READINGS:
+        print(f"  Недостаточно данных: {n_total} < {config.FORECAST_MIN_READINGS}")
+        return
+
+    cutoff_idx = int(n_total * (1.0 - config.VALIDATION_SPLIT))
+    cutoff_ts  = all_rows[cutoff_idx][0]
+    n_held     = n_total - cutoff_idx
+
+    seq   = config.SEQUENCE_LENGTH
+    steps = config.FORECAST_STEPS
+    n_steps = len(steps)
+
+    print("═" * 65)
+    print("  ВАЛИДАЦИЯ НА ОТЛОЖЕННОЙ ВЫБОРКЕ")
+    print("═" * 65)
+    print(f"  Всего записей:  {n_total}")
+    print(f"  Обучение (70%): {cutoff_idx}  (до {cutoff_ts[:16]})")
+    print(f"  Отложено (30%): {n_held}      (с  {cutoff_ts[:16]})")
+
+    min_needed = seq + max(steps) + 10
+    if n_held < min_needed:
+        print(f"\n  Отложенная выборка слишком мала: {n_held} < {min_needed}")
+        return
+
+    # ── 2. Build feature arrays from held-out data ────────────────────────────
+    held     = all_rows[cutoff_idx:]
+    data_raw = np.array(
+        [[r[1], r[2], r[3]] for r in held], dtype=np.float32
+    )  # (n_held, 3): [temp, hum, pres]
+
+    # ── 3. Load scaler ────────────────────────────────────────────────────────
+    if not os.path.exists(config.SCALER_PATH):
+        print("  Scaler не найден — LSTM ещё не обучен.")
+        return
+    with open(config.SCALER_PATH) as fh:
+        sc = json.load(fh)
+    s_min = np.array(sc["min"], dtype=np.float32)
+    s_max = np.array(sc["max"], dtype=np.float32)
+    rng   = s_max - s_min
+    rng[rng == 0] = 1.0
+    norm  = (data_raw - s_min) / rng
+
+    # ── 4. Load LSTM model ────────────────────────────────────────────────────
+    weights_file = config.WEIGHTS_PATH
+    if not weights_file.endswith(".npz"):
+        weights_file += ".npz"
+    if not os.path.exists(weights_file):
+        print("  Веса LSTM не найдены — модель ещё не обучена.")
+        return
+
+    print("\n  Загрузка LSTM модели...")
+    try:
+        import tensorflow as tf
+
+        n_out = 3 * n_steps
+        model = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(seq, 3)),
+            tf.keras.layers.LSTM(config.LSTM_UNITS, return_sequences=True),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.LSTM(config.LSTM_UNITS),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Dense(n_out),
+        ])
+        w_data = np.load(weights_file, allow_pickle=False)
+        model.set_weights([w_data[f"arr_{i}"] for i in range(len(w_data.files))])
+    except Exception as exc:
+        print(f"  Ошибка загрузки модели: {exc}")
+        return
+
+    # ── 5. Build sequences (strictly from held-out portion) ───────────────────
+    n_seqs = len(norm) - seq - max(steps)
+    X_list, y_list, ts_list = [], [], []
+    for i in range(n_seqs):
+        X_list.append(norm[i: i + seq])
+        targets = []
+        for st in steps:
+            targets.extend(data_raw[i + seq + st - 1])
+        y_list.append(targets)
+        ts_list.append(held[i + seq][0])  # ISO timestamp when forecast is made
+
+    X      = np.array(X_list, dtype=np.float32)   # (n_seqs, seq, 3)
+    y_true = np.array(y_list, dtype=np.float32)   # (n_seqs, n_steps*3)
+
+    print(f"  Последовательностей для оценки: {n_seqs}")
+    print("  Вычисление предсказаний LSTM (может занять ~1 мин)...")
+
+    y_pred_norm = model.predict(X, batch_size=64, verbose=0)
+
+    # Denormalise predictions
+    rng_tiled = np.tile(rng, n_steps)
+    min_tiled = np.tile(s_min, n_steps)
+    y_pred    = y_pred_norm * rng_tiled + min_tiled  # (n_seqs, n_steps*3)
+
+    # MAE — Base LSTM
+    mae_base_temp = [
+        float(np.mean(np.abs(y_pred[:, i * 3]     - y_true[:, i * 3])))
+        for i in range(n_steps)
+    ]
+    mae_base_pres = [
+        float(np.mean(np.abs(y_pred[:, i * 3 + 2] - y_true[:, i * 3 + 2])))
+        for i in range(n_steps)
+    ]
+
+    # ── 6. Apply correction model (vectorised batch) ──────────────────────────
+    cm = CorrectionModel()
+    correction_available = cm.is_ready() and n_steps == 3
+
+    if correction_available:
+        print("  Применение модели коррекции...")
+        from datetime import datetime as _dt
+
+        # Parse timestamps and compute cyclic time features (vectorised)
+        dt_list  = []
+        for ts_str in ts_list:
+            try:
+                dt_list.append(_dt.fromisoformat(ts_str))
+            except Exception:
+                dt_list.append(_dt.utcnow())
+        hours    = np.array([dt.hour      for dt in dt_list], dtype=np.float32)
+        weekdays = np.array([dt.weekday() for dt in dt_list], dtype=np.float32)
+        sin_h    = np.sin(2 * np.pi * hours    / 24).astype(np.float32)
+        cos_h    = np.cos(2 * np.pi * hours    / 24).astype(np.float32)
+        sin_dow  = np.sin(2 * np.pi * weekdays /  7).astype(np.float32)
+        cos_dow  = np.cos(2 * np.pi * weekdays /  7).astype(np.float32)
+
+        # Current pressure at the time of each forecast
+        cur_pres = data_raw[seq - 1: seq - 1 + n_seqs, 2]          # (n_seqs,)
+        pres_trend = y_pred[:, (n_steps - 1) * 3 + 2] - cur_pres   # (n_seqs,)
+
+        X_corr = np.column_stack([
+            y_pred[:, 0],   # temp_1h
+            y_pred[:, 3],   # temp_2h
+            y_pred[:, 6],   # temp_3h
+            y_pred[:, 2],   # pres_1h
+            y_pred[:, 5],   # pres_2h
+            y_pred[:, 8],   # pres_3h
+            pres_trend,
+            sin_h, cos_h, sin_dow, cos_dow,
+        ]).astype(np.float32)  # (n_seqs, 11)
+
+        deltas = cm.predict_correction_batch(X_corr)  # (n_seqs, 6)
+
+        y_corr = y_pred.copy()
+        for i in range(n_steps):
+            y_corr[:, i * 3]     += deltas[:, i]           # Δtemp
+            y_corr[:, i * 3 + 2] += deltas[:, n_steps + i] # Δpres
+
+        mae_corr_temp = [
+            float(np.mean(np.abs(y_corr[:, i * 3]     - y_true[:, i * 3])))
+            for i in range(n_steps)
+        ]
+        mae_corr_pres = [
+            float(np.mean(np.abs(y_corr[:, i * 3 + 2] - y_true[:, i * 3 + 2])))
+            for i in range(n_steps)
+        ]
+    else:
+        mae_corr_temp = [None] * n_steps
+        mae_corr_pres = [None] * n_steps
+        if not cm.is_ready():
+            print("  Модель коррекции не обучена — колонка недоступна.")
+
+    # ── 7. Online API MAE from research_data.db ───────────────────────────────
+    mae_api_temp = [None] * n_steps
+    mae_api_pres = [None] * n_steps
+    horizon_labels = ["1h", "2h", "3h"]
+    try:
+        with sqlite3.connect(str(_RESEARCH_DB)) as conn:
+            conn.row_factory = sqlite3.Row
+            for i, label in enumerate(horizon_labels[:n_steps]):
+                col_t = f"signed_error_temp_{label}"
+                col_p = f"signed_error_pres_{label}"
+                r = conn.execute(
+                    f"SELECT AVG(ABS(fv.{col_t})) AS mt, "
+                    f"       AVG(ABS(fv.{col_p})) AS mp "
+                    "FROM forecast_verification fv "
+                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                    "WHERE fl.mode = 'online_api' "
+                    "  AND fl.timestamp >= ? "
+                    f"  AND fv.{col_t} IS NOT NULL",
+                    (cutoff_ts,),
+                ).fetchone()
+                if r and r["mt"] is not None:
+                    mae_api_temp[i] = float(r["mt"])
+                    if r["mp"] is not None:
+                        mae_api_pres[i] = float(r["mp"])
+    except Exception as exc:
+        print(f"  Предупреждение: данные API недоступны: {exc}")
+
+    # ── 8. Print results ──────────────────────────────────────────────────────
+    def _ft(v):
+        return f"{v:.4f}°C" if v is not None else "—"
+
+    def _fp(v):
+        return f"{v:.4f} hPa" if v is not None else "—"
+
+    print()
+    print("═" * 65)
+    print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {held[-1][0][:16]}")
+    print(f"  Образцов: {n_seqs}")
+    print("─" * 65)
+    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+    print(f"  {'MAE (°C)':<10} {'─'*16} {'─'*16} {'─'*16}")
+    for i, h in enumerate(horizon_labels[:n_steps]):
+        print(f"  +{h:<9} {_ft(mae_base_temp[i]):>16} "
+              f"{_ft(mae_corr_temp[i]):>16} {_ft(mae_api_temp[i]):>16}")
+    print()
+    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+    print(f"  {'MAE (hPa)':<10} {'─'*16} {'─'*16} {'─'*16}")
+    for i, h in enumerate(horizon_labels[:n_steps]):
+        print(f"  +{h:<9} {_fp(mae_base_pres[i]):>16} "
+              f"{_fp(mae_corr_pres[i]):>16} {_fp(mae_api_pres[i]):>16}")
+    print("═" * 65)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="calibration_cli",
@@ -158,12 +394,14 @@ def main() -> None:
     sub.add_parser("correction-status",  help="Show correction model status")
     sub.add_parser("train-correction",   help="Train the correction model")
     sub.add_parser("rollback-correction", help="Delete correction model files")
+    sub.add_parser("validate",           help="Held-out validation: LSTM vs correction vs API")
 
     args = parser.parse_args()
     dispatch = {
         "correction-status":   cmd_correction_status,
         "train-correction":    cmd_train_correction,
         "rollback-correction": cmd_rollback_correction,
+        "validate":            cmd_validate,
     }
     dispatch[args.command](args)
 

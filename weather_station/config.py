@@ -57,6 +57,10 @@ API_FETCH_CACHE_SEC: int     = 600   # cache forecast response for N seconds (10
 API_FORECAST_HOURS: int      = 3     # hours ahead to request from Open-Meteo
 OPEN_METEO_BASE_URL: str     = "https://api.open-meteo.com/v1/forecast"
 
+# Validation split — last VALIDATION_SPLIT fraction of weather_history.db
+# is held out and never used for training (LSTM or correction model).
+VALIDATION_SPLIT: float = 0.30
+
 # Correction model
 CORRECTION_DIR: str           = "forecasting/correction"
 CORRECTION_WEIGHTS_PATH: str  = "forecasting/correction/correction_weights.npz"
