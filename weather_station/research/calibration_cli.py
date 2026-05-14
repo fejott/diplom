@@ -187,8 +187,8 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     n_train_raw = sum(1 for r in all_rows if r[0] < cutoff_ts)
     n_held_raw  = n_total - n_train_raw
 
-    seq     = config.SEQUENCE_LENGTH   # hourly steps
-    steps   = config.FORECAST_STEPS   # [1, 2, 3] hour offsets
+    seq     = config.SEQUENCE_LENGTH   # 5-min steps (12 = 1 h of context)
+    steps   = config.FORECAST_STEPS   # [12, 24, 36] → +1h/+2h/+3h in 5-min units
     n_steps = len(steps)
 
     print("═" * 65)
@@ -198,18 +198,46 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     print(f"  Обучение (70%):  {n_train_raw} зап. (до {cutoff_ts[:16]})")
     print(f"  Отложено (30%):  {n_held_raw} зап. (с  {cutoff_ts[:16]})")
 
-    # ── 2. Build raw held-out array ───────────────────────────────────────────
+    # ── 2. Resample held-out rows to 5-minute buckets ─────────────────────────
+    # The LSTM scaler and weights were trained on 5-min resampled data,
+    # so validation sequences must also use 5-min resolution.
+    from collections import defaultdict
+
     held_raw = [r for r in all_rows if r[0] >= cutoff_ts]
-    n_held_raw = len(held_raw)
+
+    def _resample_rows_to_5min(rows):
+        """Average raw DB rows (ts, temp, hum, pres) into 5-minute buckets."""
+        groups: dict = defaultdict(list)
+        for r in rows:
+            ts = _dt2.fromisoformat(r[0])
+            minute_floor = (ts.minute // 5) * 5
+            bucket_key   = ts.replace(minute=minute_floor, second=0, microsecond=0)
+            groups[bucket_key].append(r)
+        out = []
+        for bk in sorted(groups.keys()):
+            grp = groups[bk]
+            n   = len(grp)
+            out.append((
+                bk.isoformat(),
+                sum(r[1] for r in grp) / n,
+                sum(r[2] for r in grp) / n,
+                sum(r[3] for r in grp) / n,
+            ))
+        return out
+
+    held_5min   = _resample_rows_to_5min(held_raw)
+    n_held_5min = len(held_5min)
+
+    print(f"  Отложено (5-мин): {n_held_5min} бакетов")
 
     min_needed = seq + max(steps) + 10
-    if n_held_raw < min_needed:
-        print(f"\n  Отложенная выборка слишком мала: {n_held_raw} < {min_needed}")
+    if n_held_5min < min_needed:
+        print(f"\n  Отложенная выборка слишком мала: {n_held_5min} < {min_needed}")
         return
 
     data_raw = np.array(
-        [[r[1], r[2], r[3]] for r in held_raw], dtype=np.float32
-    )  # (n_held, 3): [temp, hum, pres]
+        [[r[1], r[2], r[3]] for r in held_5min], dtype=np.float32
+    )  # (n_held_5min, 3): [temp, hum, pres]
 
     # ── 3. Load scaler ────────────────────────────────────────────────────────
     if not os.path.exists(config.SCALER_PATH):
@@ -250,8 +278,8 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         print(f"  Ошибка загрузки модели: {exc}")
         return
 
-    # ── 5. Build sequences from raw held-out data ─────────────────────────────
-    n_seqs = n_held_raw - seq - max(steps)
+    # ── 5. Build sequences from 5-min held-out data ───────────────────────────
+    n_seqs = n_held_5min - seq - max(steps)
     X_list, y_list, ts_list = [], [], []
     for i in range(n_seqs):
         X_list.append(norm[i: i + seq])
@@ -259,7 +287,7 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         for st in steps:
             targets.extend(data_raw[i + seq + st - 1])
         y_list.append(targets)
-        ts_list.append(held_raw[i + seq][0])  # forecast timestamp
+        ts_list.append(held_5min[i + seq][0])  # forecast timestamp
 
     X      = np.array(X_list, dtype=np.float32)   # (n_seqs, seq, 3)
     y_true = np.array(y_list, dtype=np.float32)   # (n_seqs, n_steps*3)
@@ -378,8 +406,8 @@ def cmd_validate(_args: argparse.Namespace) -> None:
 
     print()
     print("═" * 65)
-    print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {held_raw[-1][0][:16]}")
-    print(f"  Образцов: {n_seqs}")
+    print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {held_5min[-1][0][:16]}")
+    print(f"  Образцов (5-мин): {n_seqs}")
     print("─" * 65)
     print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
     print(f"  {'MAE (°C)':<10} {'─'*16} {'─'*16} {'─'*16}")

@@ -86,7 +86,10 @@ class LSTMForecaster:
         Returns:
             ForecastResult with method="lstm", or a rule-based/insufficient result.
         """
-        if len(recent) < config.SEQUENCE_LENGTH:
+        # Resample raw readings to uniform 5-minute buckets so inference uses
+        # the same temporal resolution as training — regardless of sensor rate.
+        five_min = self._resample_to_5min(recent)
+        if len(five_min) < config.SEQUENCE_LENGTH:
             return self._insufficient_data_result()
 
         try:
@@ -98,10 +101,10 @@ class LSTMForecaster:
             if model is None:
                 raise RuntimeError("Model not loaded")
 
-            # Build (1, seq_len, 3) input tensor from last SEQUENCE_LENGTH readings
+            # Build (1, seq_len, 3) input tensor from last SEQUENCE_LENGTH 5-min buckets
             raw = np.array(
                 [[r.temperature, r.humidity, r.pressure]
-                 for r in recent[-config.SEQUENCE_LENGTH:]],
+                 for r in five_min[-config.SEQUENCE_LENGTH:]],
                 dtype=np.float32,
             )
             rng           = scaler_max - scaler_min
@@ -188,16 +191,22 @@ class LSTMForecaster:
         n_held    = sum(1 for r in readings if r.timestamp >= cutoff_dt)
 
         train_raw = train_raw[-config.LSTM_MAX_TRAIN_READINGS:]
+
+        # Resample to 5-minute buckets — gives uniform temporal spacing
+        # regardless of whether the sensor ran at 5 s, 30 s, or mixed rates.
+        # FORECAST_STEPS=[12,24,36] then correspond to exactly +1h/+2h/+3h.
+        train_5min = self._resample_to_5min(train_raw)
         logger.info(
-            "LSTM training on %d raw readings (train span %.1f h; held-out %d raw).",
+            "LSTM training: %d raw → %d five-min buckets (train span %.1f h; held-out %d raw).",
             len(train_raw),
+            len(train_5min),
             (cutoff_dt - t_start).total_seconds() / 3600,
             n_held,
         )
 
-        # Feature matrix
+        # Feature matrix — built from 5-min resampled data
         data = np.array(
-            [[r.temperature, r.humidity, r.pressure] for r in train_raw],
+            [[r.temperature, r.humidity, r.pressure] for r in train_5min],
             dtype=np.float32,
         )
         data = self._filter_data(data)
@@ -392,6 +401,45 @@ class LSTMForecaster:
                 logger.info("Model loaded from weights → %s", weights_file)
         except Exception as exc:
             logger.warning("Could not load model/scaler from disk: %s", exc)
+
+    @staticmethod
+    def _resample_to_5min(readings: List[WeatherData]) -> List[WeatherData]:
+        """Group raw readings into 5-minute calendar buckets and return per-bucket averages.
+
+        Handles any collection rate (2 s, 5 s, 30 s, …) identically — the
+        model always sees uniformly-spaced 5-minute steps regardless of how
+        fast the sensor loop ran.
+
+        Args:
+            readings: Chronological list of raw WeatherData (any interval).
+
+        Returns:
+            Sorted list of WeatherData with one entry per 5-minute bucket that
+            contains at least one reading.  Empty buckets are skipped.
+        """
+        from collections import defaultdict
+
+        if not readings:
+            return []
+
+        groups: dict = defaultdict(list)
+        for r in readings:
+            minute_floor = (r.timestamp.minute // 5) * 5
+            bucket_key   = r.timestamp.replace(minute=minute_floor, second=0, microsecond=0)
+            groups[bucket_key].append(r)
+
+        result: List[WeatherData] = []
+        for bucket_key in sorted(groups.keys()):
+            grp = groups[bucket_key]
+            n   = len(grp)
+            result.append(WeatherData(
+                temperature=round(sum(r.temperature for r in grp) / n, 4),
+                humidity   =round(sum(r.humidity    for r in grp) / n, 4),
+                pressure   =round(sum(r.pressure    for r in grp) / n, 4),
+                pressure_sl=round(sum(r.pressure_sl for r in grp) / n, 4),
+                timestamp  =bucket_key,
+            ))
+        return result
 
     @staticmethod
     def _resample_to_hourly(readings: List[WeatherData]) -> List[WeatherData]:

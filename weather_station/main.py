@@ -193,7 +193,7 @@ def main() -> None:
                 data_count = data_store.count()
                 forecast   = hybrid.predict(
                     gps_data,
-                    data_store.get_last_n(config.SEQUENCE_LENGTH),
+                    data_store.get_last_n(config.FORECAST_MIN_READINGS),
                     current_weather=weather_data,
                 )
                 lstm_forecaster._retrain_if_needed(research)
