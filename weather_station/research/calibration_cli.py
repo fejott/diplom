@@ -33,20 +33,31 @@ def _progress_bar(n: int, need: int) -> str:
 
 
 def cmd_correction_status(_args: argparse.Namespace) -> None:
-    """Show correction model status: verified count, progress, trained/not."""
+    """Show correction model status: verified count (current LSTM only), progress, trained/not."""
     cm = CorrectionModel()
     ok, msg = cm.can_train(str(_RESEARCH_DB))
+    since_ts = cm._get_lstm_trained_at()
 
-    # Count verified rows
+    # Count verified rows — filtered to current LSTM deployment
     try:
         import sqlite3
         with sqlite3.connect(str(_RESEARCH_DB)) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM forecast_verification fv "
-                "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                "WHERE fv.signed_error_temp_1h IS NOT NULL "
-                "  AND fl.mode IN ('lstm', 'lstm_corrected')"
-            ).fetchone()
+            if since_ts:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                    "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                    "  AND fl.mode IN ('lstm', 'lstm_corrected') "
+                    "  AND fl.timestamp >= ?",
+                    (since_ts,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                    "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                    "  AND fl.mode IN ('lstm', 'lstm_corrected')"
+                ).fetchone()
         n = row[0] if row else 0
     except Exception:
         n = 0
@@ -76,10 +87,15 @@ def cmd_correction_status(_args: argparse.Namespace) -> None:
         except Exception:
             pass
 
+    since_line = f"  С момента деплоя LSTM: {since_ts[:16]}" if since_ts else ""
     lines = [
         "═" * 50,
         "  СТАТУС МОДЕЛИ КОРРЕКЦИИ",
         "═" * 50,
+    ]
+    if since_line:
+        lines.append(since_line)
+    lines += [
         f"  Верифицировано: {n} / {need}",
         f"  [{bar}] {pct}%",
         f"  Модель обучена: {trained_str}",

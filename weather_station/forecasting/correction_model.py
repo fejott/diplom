@@ -71,26 +71,58 @@ class CorrectionModel:
         """True when weights are loaded and inference can run."""
         return self._loaded
 
+    @staticmethod
+    def _get_lstm_trained_at() -> Optional[str]:
+        """Return the UTC ISO timestamp when the current LSTM was last trained.
+
+        Reads ``trained_at`` from metrics.json (written by LSTMForecaster.train()).
+        Returns None if the file is missing or the key is absent.
+        """
+        try:
+            if os.path.exists(config.METRICS_PATH):
+                with open(config.METRICS_PATH, "r") as fh:
+                    m = json.load(fh)
+                return m.get("trained_at")
+        except Exception as exc:
+            logger.warning("_get_lstm_trained_at error: %s", exc)
+        return None
+
     def can_train(self, research_db_path: str) -> tuple[bool, str]:
         """Check whether enough verified rows exist to train.
+
+        Only counts verified rows produced by the *current* LSTM model
+        (forecast timestamp ≥ trained_at from metrics.json) so that stale
+        errors from previous model versions are not counted.
 
         Returns:
             (ok, message) — ok is True when training is possible.
         """
+        since_ts = self._get_lstm_trained_at()
         try:
             with sqlite3.connect(research_db_path) as conn:
                 conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
-                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                    "WHERE fv.signed_error_temp_1h IS NOT NULL "
-                    "  AND fl.mode IN ('lstm', 'lstm_corrected')"
-                ).fetchone()
+                if since_ts:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                        "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                        "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                        "  AND fl.mode IN ('lstm', 'lstm_corrected') "
+                        "  AND fl.timestamp >= ?",
+                        (since_ts,),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                        "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                        "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                        "  AND fl.mode IN ('lstm', 'lstm_corrected')"
+                    ).fetchone()
             n = row["n"] if row else 0
             need = config.CORRECTION_MIN_VERIFIED
+            since_str = f" (с {since_ts[:16]})" if since_ts else ""
             if n >= need:
-                return True, f"Достаточно данных: {n} / {need}"
-            return False, f"Недостаточно данных: {n} / {need}"
+                return True, f"Достаточно данных{since_str}: {n} / {need}"
+            return False, f"Недостаточно данных{since_str}: {n} / {need}"
         except Exception as exc:
             return False, f"Ошибка проверки БД: {exc}"
 
@@ -130,13 +162,25 @@ class CorrectionModel:
             return CorrectionResult(False, 0, None, None,
                                     f"Ошибка чтения БД: {exc}")
 
+        # Keep only forecasts produced by the current LSTM model
+        # (timestamp ≥ trained_at from metrics.json).  This prevents stale
+        # errors from previous model versions from contaminating training.
+        since_ts = self._get_lstm_trained_at()
+        if since_ts:
+            rows = [r for r in rows if r["timestamp"] >= since_ts]
+            logger.info(
+                "Correction train: %d rows after since filter (since=%s)",
+                len(rows), since_ts[:16],
+            )
+
         # Keep only forecasts from the training period (exclude held-out data)
         cutoff_ts = self._get_training_cutoff_ts()
         if cutoff_ts:
+            before = len(rows)
             rows = [r for r in rows if r["timestamp"] < cutoff_ts]
             logger.info(
-                "Correction train: %d rows after cutoff filter (cutoff=%s)",
-                len(rows), cutoff_ts[:16],
+                "Correction train: %d rows after cutoff filter (%d → %d, cutoff=%s)",
+                len(rows), before, len(rows), cutoff_ts[:16],
             )
 
         if len(rows) < config.CORRECTION_MIN_VERIFIED:

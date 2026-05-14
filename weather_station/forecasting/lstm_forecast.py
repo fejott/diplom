@@ -292,7 +292,8 @@ class LSTMForecaster:
         f1        = (2 * precision * recall / (precision + recall)
                      if (precision + recall) > 0 else 0.0)
         metrics.update({'precision': precision, 'recall': recall, 'f1': f1,
-                        'tp': tp, 'fp': fp, 'fn': fn})
+                        'tp': tp, 'fp': fp, 'fn': fn,
+                        'trained_at': datetime.utcnow().isoformat()})
 
         try:
             os.makedirs(os.path.dirname(config.METRICS_PATH) or '.', exist_ok=True)
