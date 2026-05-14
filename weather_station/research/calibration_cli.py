@@ -423,6 +423,139 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     print("═" * 65)
 
 
+def cmd_backfill_signed_errors(_args: argparse.Namespace) -> None:
+    """Backfill signed_error_* columns for historical LSTM verifications.
+
+    Old forecast_verification rows were written before the signed_error_*
+    columns existed in the schema.  They have verified_Nh=1 and absolute
+    error_temp_Nh stored, but signed_error_temp_Nh=NULL — so the correction
+    model can't use them.
+
+    This command reconstructs the signed errors by looking up the actual
+    temperature and pressure from sensor_log (same research_data.db, same
+    UTC clock) at forecast_timestamp + H hours for each horizon H in {1,2,3}.
+    A reading within ±10 minutes is accepted as the verification actual.
+    """
+    import bisect
+    import sqlite3
+    from datetime import datetime as _dt, timedelta
+
+    print("═" * 60)
+    print("  БЭКФИЛЛ SIGNED ERRORS ДЛЯ КОРРЕКЦИОННОЙ МОДЕЛИ")
+    print("═" * 60)
+
+    with sqlite3.connect(str(_RESEARCH_DB)) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # ── 1. Load sensor_log as reference actual values ──────────────────
+        sl_rows = conn.execute(
+            "SELECT timestamp, temperature, pressure "
+            "FROM sensor_log ORDER BY timestamp"
+        ).fetchall()
+
+    if not sl_rows:
+        print("  sensor_log пуст — нечего использовать для бэкфилла.")
+        return
+
+    sl_ts   = [r["timestamp"]   for r in sl_rows]  # sorted ISO UTC strings
+    sl_temp = [r["temperature"] for r in sl_rows]
+    sl_pres = [r["pressure"]    for r in sl_rows]
+
+    _MAX_GAP_SEC = 600  # accept sensor_log reading within ±10 min
+
+    def _lookup_actual(forecast_ts: str, hours: int):
+        """Find nearest sensor_log (temp, pressure) at forecast_ts + hours."""
+        target = (_dt.fromisoformat(forecast_ts)
+                  + timedelta(hours=hours)).isoformat()
+        idx = bisect.bisect_left(sl_ts, target)
+        best_i, best_gap = None, float("inf")
+        for i in (idx - 1, idx):
+            if 0 <= i < len(sl_ts):
+                gap = abs((_dt.fromisoformat(sl_ts[i])
+                           - _dt.fromisoformat(target)).total_seconds())
+                if gap < best_gap:
+                    best_gap, best_i = gap, i
+        if best_i is None or best_gap > _MAX_GAP_SEC:
+            return None, None
+        return sl_temp[best_i], sl_pres[best_i]
+
+    with sqlite3.connect(str(_RESEARCH_DB)) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # ── 2. Load rows that need backfilling ─────────────────────────────
+        need_rows = conn.execute(
+            "SELECT fv.id AS fv_id, fl.timestamp, "
+            "  fl.temp_1h, fl.temp_2h, fl.temp_3h, "
+            "  fl.pressure_1h, fl.pressure_2h, fl.pressure_3h, "
+            "  fv.verified_1h, fv.verified_2h, fv.verified_3h "
+            "FROM forecast_verification fv "
+            "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+            "WHERE fv.signed_error_temp_1h IS NULL "
+            "  AND fv.verified_1h = 1 "
+            "  AND fl.mode IN ('lstm', 'lstm_corrected')"
+        ).fetchall()
+
+    print(f"  Записей для бэкфилла: {len(need_rows)}")
+    if not need_rows:
+        print("  Нечего бэкфиллить.")
+        return
+
+    # ── 3. Compute signed errors ───────────────────────────────────────────
+    updates = []
+    n_partial = 0
+    for row in need_rows:
+        fts = row["timestamp"]
+        signed: dict = {}
+        for h in (1, 2, 3):
+            if not row[f"verified_{h}h"]:
+                continue  # horizon not yet verified — skip
+            a_temp, a_pres = _lookup_actual(fts, h)
+            if a_temp is None:
+                continue
+            pred_t = row[f"temp_{h}h"]
+            pred_p = row[f"pressure_{h}h"]
+            if pred_t is not None:
+                signed[f"st{h}"] = round(a_temp - pred_t, 4)
+            if pred_p is not None and a_pres is not None:
+                signed[f"sp{h}"] = round(a_pres - pred_p, 4)
+
+        if "st1" not in signed:
+            n_partial += 1
+            continue  # need at minimum the +1h signed error
+
+        updates.append((
+            signed.get("st1"),
+            signed.get("st2"),
+            signed.get("st3"),
+            signed.get("sp1"),
+            signed.get("sp2"),
+            signed.get("sp3"),
+            row["fv_id"],
+        ))
+
+    print(f"  Совпадений в sensor_log:  {len(updates)}")
+    print(f"  Без покрытия (sensor_log слишком редкий): {n_partial}")
+
+    if not updates:
+        print("  Нет данных для записи.")
+        return
+
+    # ── 4. Write back to forecast_verification ─────────────────────────────
+    with sqlite3.connect(str(_RESEARCH_DB)) as conn:
+        conn.executemany(
+            "UPDATE forecast_verification SET "
+            "  signed_error_temp_1h=?, signed_error_temp_2h=?, signed_error_temp_3h=?, "
+            "  signed_error_pres_1h=?, signed_error_pres_2h=?, signed_error_pres_3h=? "
+            "WHERE id=?",
+            updates,
+        )
+        conn.commit()
+
+    print(f"  Обновлено строк:          {len(updates)}")
+    print("  Готово. Запустите correction-status, чтобы проверить счётчик.")
+    print("═" * 60)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="calibration_cli",
@@ -430,17 +563,19 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("correction-status",  help="Show correction model status")
-    sub.add_parser("train-correction",   help="Train the correction model")
-    sub.add_parser("rollback-correction", help="Delete correction model files")
-    sub.add_parser("validate",           help="Held-out validation: LSTM vs correction vs API")
+    sub.add_parser("correction-status",      help="Show correction model status")
+    sub.add_parser("train-correction",       help="Train the correction model")
+    sub.add_parser("rollback-correction",    help="Delete correction model files")
+    sub.add_parser("validate",               help="Held-out validation: LSTM vs correction vs API")
+    sub.add_parser("backfill-signed-errors", help="Backfill signed errors for old LSTM verifications")
 
     args = parser.parse_args()
     dispatch = {
-        "correction-status":   cmd_correction_status,
-        "train-correction":    cmd_train_correction,
-        "rollback-correction": cmd_rollback_correction,
-        "validate":            cmd_validate,
+        "correction-status":      cmd_correction_status,
+        "train-correction":       cmd_train_correction,
+        "rollback-correction":    cmd_rollback_correction,
+        "validate":               cmd_validate,
+        "backfill-signed-errors": cmd_backfill_signed_errors,
     }
     dispatch[args.command](args)
 
