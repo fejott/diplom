@@ -341,9 +341,28 @@ class LSTMForecaster:
         self._is_training = True
         snapshot_count = current_count
 
+        # Path for the cross-process exclusive lock file.  fcntl.flock() is
+        # automatically released if the process dies, so no stale lock files.
+        _lock_dir  = os.path.dirname(config.WEIGHTS_PATH) or '.'
+        _lock_path = os.path.join(_lock_dir, '.lstm_training.lock')
+
         def _run():
+            import fcntl as _fcntl
+            _lock_fd = None
             t0 = time.monotonic()
             try:
+                os.makedirs(_lock_dir, exist_ok=True)
+                _lock_fd = open(_lock_path, 'w')
+                try:
+                    _fcntl.flock(_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                except (IOError, OSError):
+                    logger.info(
+                        "Cross-process training lock busy — another main.py is "
+                        "already training. Skipping this run (count=%d).",
+                        snapshot_count,
+                    )
+                    return
+
                 metrics  = self.train(readings)
                 duration = time.monotonic() - t0
                 self._last_train_count = snapshot_count
@@ -365,6 +384,12 @@ class LSTMForecaster:
             except Exception as exc:
                 logger.error("Background retrain failed: %s", exc)
             finally:
+                if _lock_fd is not None:
+                    try:
+                        _fcntl.flock(_lock_fd, _fcntl.LOCK_UN)
+                        _lock_fd.close()
+                    except Exception:
+                        pass
                 self._is_training = False
 
         self._training_thread = threading.Thread(target=_run, daemon=True, name="lstm-train")
