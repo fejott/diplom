@@ -187,18 +187,32 @@ def main() -> None:
 
             # ── Forecast (hybrid: online API → LSTM → rules) ──────────────────
             forecast: Optional[ForecastResult] = None
+            lstm_shadow: Optional[ForecastResult] = None
             data_count: int = 0
             t0 = time.perf_counter()
+            recent_readings = data_store.get_last_n(config.FORECAST_MIN_READINGS)
             try:
                 data_count = data_store.count()
                 forecast   = hybrid.predict(
                     gps_data,
-                    data_store.get_last_n(config.FORECAST_MIN_READINGS),
+                    recent_readings,
                     current_weather=weather_data,
                 )
                 lstm_forecaster._retrain_if_needed(research)
             except Exception as exc:
                 logger.error("Forecast error: %s", exc)
+
+            # Always log an LSTM prediction for correction-model training,
+            # even when the hybrid chose online API as the primary forecast.
+            # This ensures correction data accumulates regardless of WiFi.
+            if (forecast is not None
+                    and getattr(forecast, "mode", None) != "lstm"
+                    and lstm_forecaster._model is not None):
+                try:
+                    lstm_shadow = lstm_forecaster.predict(recent_readings)
+                except Exception as exc:
+                    logger.debug("LSTM shadow predict error: %s", exc)
+
             forecast_ms = (time.perf_counter() - t0) * 1000
             total_ms    = (time.perf_counter() - cycle_start) * 1000
 
@@ -208,6 +222,9 @@ def main() -> None:
                 if forecast is not None:
                     research.log_forecast(forecast, weather_data)
                     research.verify_forecasts(weather_data)
+                # Log shadow LSTM forecast separately so correction model has data
+                if lstm_shadow is not None:
+                    research.log_forecast(lstm_shadow, weather_data)
                 research.log_timing({
                     "bme280_ms":   bme280_ms,
                     "gps_ms":      gps_ms,
