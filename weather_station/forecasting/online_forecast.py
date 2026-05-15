@@ -136,7 +136,7 @@ class OnlineForecaster:
                     "surface_pressure",
                 ]),
                 "forecast_days":  2,   # 2 days so idx+3 is always in range
-                "timezone":       "auto",
+                "timezone":       "UTC",
             }
             resp = requests.get(
                 config.OPEN_METEO_BASE_URL,
@@ -149,15 +149,17 @@ class OnlineForecaster:
             hourly = data["hourly"]
             times  = hourly["time"]   # "2026-05-10T14:00" strings
 
-            # Find current-hour index
-            now_str = datetime.now().strftime("%Y-%m-%dT%H:00")
+            # Find current-hour index — API now returns UTC times ("timezone": "UTC"),
+            # so compare against UTC wall-clock to pick the correct slot.
+            from datetime import timezone as _tz
+            now_utc = datetime.now(_tz.utc).replace(tzinfo=None)
+            now_str = now_utc.strftime("%Y-%m-%dT%H:00")
             if now_str in times:
                 idx = times.index(now_str)
             else:
-                now_dt = datetime.now()
                 idx = next(
                     (i for i, t in enumerate(times)
-                     if datetime.fromisoformat(t) >= now_dt),
+                     if datetime.fromisoformat(t) >= now_utc),
                     0,
                 )
 
