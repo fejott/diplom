@@ -173,16 +173,6 @@ class CorrectionModel:
                 len(rows), since_ts[:16],
             )
 
-        # Keep only forecasts from the training period (exclude held-out data)
-        cutoff_ts = self._get_training_cutoff_ts()
-        if cutoff_ts:
-            before = len(rows)
-            rows = [r for r in rows if r["timestamp"] < cutoff_ts]
-            logger.info(
-                "Correction train: %d rows after cutoff filter (%d → %d, cutoff=%s)",
-                len(rows), before, len(rows), cutoff_ts[:16],
-            )
-
         if len(rows) < config.CORRECTION_MIN_VERIFIED:
             return CorrectionResult(False, len(rows), None, None,
                                     f"Мало данных: {len(rows)} / {config.CORRECTION_MIN_VERIFIED}")
