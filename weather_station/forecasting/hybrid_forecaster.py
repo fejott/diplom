@@ -128,7 +128,7 @@ class HybridForecaster:
                 base = None
 
             if base is not None:
-                self._api_last_ok = datetime.now()
+                self._api_last_ok = datetime.utcnow()
                 self._mode        = "online"
                 logger.debug("Forecast mode: online API.")
                 return self._wrap(base, mode="online",
@@ -237,6 +237,6 @@ class HybridForecaster:
             pressure_in_1h = None,
             pressure_in_2h = None,
             pressure_in_3h = None,
-            valid_until    = datetime.now(),
+            valid_until    = datetime.utcnow(),
             model_version  = "none",
         )

@@ -122,7 +122,7 @@ class RuleForecaster:
             pressure_in_1h = pres_1h,
             pressure_in_2h = pres_2h,
             pressure_in_3h = pres_3h,
-            valid_until    = datetime.now() + timedelta(hours=1),
+            valid_until    = datetime.utcnow() + timedelta(hours=1),
             model_version  = "rule_v1",
         )
 
@@ -184,6 +184,6 @@ class RuleForecaster:
             pressure_in_1h = None,
             pressure_in_2h = None,
             pressure_in_3h = None,
-            valid_until    = datetime.now(),
+            valid_until    = datetime.utcnow(),
             model_version  = "none",
         )

@@ -143,7 +143,7 @@ class LSTMForecaster:
                 pressure_in_1h=pres_1h,
                 pressure_in_2h=pres_2h,
                 pressure_in_3h=pres_3h,
-                valid_until=datetime.now() + timedelta(hours=3),
+                valid_until=datetime.utcnow() + timedelta(hours=3),
                 model_version="lstm_v1",
             )
 
@@ -628,6 +628,6 @@ class LSTMForecaster:
             pressure_in_1h=None,
             pressure_in_2h=None,
             pressure_in_3h=None,
-            valid_until=datetime.now(),
+            valid_until=datetime.utcnow(),
             model_version="none",
         )

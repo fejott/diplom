@@ -156,7 +156,7 @@ class GPSSensor:
                         altitude=alt,
                         satellites=sats,
                         fix=fix,
-                        timestamp=datetime.now(),
+                        timestamp=datetime.utcnow(),
                     )
 
             # --- GPRMC: fallback for lat/lon when GGA has no fix yet ---

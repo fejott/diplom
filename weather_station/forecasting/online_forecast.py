@@ -206,7 +206,7 @@ class OnlineForecaster:
                 pressure_in_1h = pres_1h,
                 pressure_in_2h = pres_2h,
                 pressure_in_3h = pres_3h,
-                valid_until    = datetime.now() + timedelta(hours=3),
+                valid_until    = datetime.utcnow() + timedelta(hours=3),
                 model_version  = "open_meteo_v1",
             )
             self._cached_forecast = result

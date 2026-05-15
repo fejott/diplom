@@ -350,7 +350,7 @@ class CorrectionModel:
             if not self._loaded:
                 return np.zeros(6, dtype=np.float32)
 
-            ts = datetime.now()
+            ts = datetime.utcnow()
             sin_h   = math.sin(2 * math.pi * ts.hour / 24)
             cos_h   = math.cos(2 * math.pi * ts.hour / 24)
             sin_dow = math.sin(2 * math.pi * ts.weekday() / 7)

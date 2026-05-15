@@ -118,7 +118,7 @@ class BME280Sensor:
             humidity=round(raw.humidity, 2),
             pressure=pressure_raw,
             pressure_sl=round(pressure_sl, 2),
-            timestamp=datetime.now(),
+            timestamp=datetime.utcnow(),
         )
 
     # ------------------------------------------------------------------
