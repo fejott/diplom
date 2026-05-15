@@ -246,14 +246,15 @@ class ResearchCollector:
                     for fc in fc_rows:
                         fid = fc["id"]
 
-                        # Skip if this hour is already verified
+                        # Check whether a verification row exists and whether
+                        # this hour is already marked verified.
                         vrow = self._conn.execute(
-                            f"SELECT {vc} FROM forecast_verification "
-                            "WHERE forecast_id = ?",
+                            "SELECT id, " + vc + " FROM forecast_verification "
+                            "WHERE forecast_id = ? LIMIT 1",
                             (fid,),
                         ).fetchone()
                         if vrow and vrow[vc]:
-                            continue
+                            continue  # already verified for this horizon
 
                         pred_t = fc[tc]
                         pred_p = fc[pc]
@@ -263,13 +264,17 @@ class ResearchCollector:
                                   if pred_p is not None else None)
                         now_s  = now.isoformat()
 
-                        # Ensure a verification row exists for this forecast
-                        self._conn.execute(
-                            "INSERT OR IGNORE INTO forecast_verification "
-                            "(forecast_id) VALUES (?)",
-                            (fid,),
-                        )
-                        # Fill in this hour's columns
+                        # Create exactly ONE verification row (if none exists).
+                        # Do NOT use INSERT OR IGNORE — without a UNIQUE
+                        # constraint on forecast_id it always inserts, producing
+                        # duplicate rows that break the per-horizon checks.
+                        if vrow is None:
+                            self._conn.execute(
+                                "INSERT INTO forecast_verification "
+                                "(forecast_id) VALUES (?)",
+                                (fid,),
+                            )
+                        # Fill in this hour's columns on the single row.
                         self._conn.execute(
                             f"UPDATE forecast_verification SET "
                             f"  verified_at=?, actual_temp=?, actual_pressure=?, "
