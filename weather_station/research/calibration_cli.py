@@ -401,7 +401,7 @@ def cmd_validate(_args: argparse.Namespace) -> None:
                     f"       AVG(ABS(fv.{col_p})) AS mp "
                     "FROM forecast_verification fv "
                     "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                    "WHERE fl.mode = 'online_api' "
+                    "WHERE fl.mode = 'online' "
                     "  AND fl.timestamp >= ? "
                     f"  AND fv.{col_t} IS NOT NULL",
                     (cutoff_ts,),
