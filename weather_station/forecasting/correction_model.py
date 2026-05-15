@@ -216,7 +216,15 @@ class CorrectionModel:
         # ── Normalise inputs ─────────────────────────────────────────────────
         mean = X.mean(axis=0)
         std  = X.std(axis=0)
-        std[std == 0] = 1.0
+        # Clamp to a minimum that reflects natural weather variability so that
+        # inference on data outside the training window doesn't explode.
+        # Feature order: temp_1h, temp_2h, temp_3h, pres_1h, pres_2h, pres_3h,
+        #                pres_trend, sin_h, cos_h, sin_dow, cos_dow
+        _MIN_STD = np.array(
+            [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 0.5, 0.05, 0.05, 0.05, 0.05],
+            dtype=np.float32,
+        )
+        std = np.maximum(std, _MIN_STD)
         X_norm = (X - mean) / std
 
         # ── Train / val split ────────────────────────────────────────────────
@@ -313,7 +321,7 @@ class CorrectionModel:
         if not self._loaded:
             return np.zeros((len(X), 6), dtype=np.float32)
         try:
-            x_norm = (X - self._mean) / self._std
+            x_norm = np.clip((X - self._mean) / self._std, -10.0, 10.0)
             h1  = np.maximum(0, x_norm @ self._w1 + self._b1)
             h2  = np.maximum(0, h1     @ self._w2 + self._b2)
             return (h2 @ self._w3 + self._b3).astype(np.float32)
@@ -353,7 +361,7 @@ class CorrectionModel:
                 sin_h, cos_h, sin_dow, cos_dow,
             ]], dtype=np.float32)
 
-            x_norm = (x - self._mean) / self._std
+            x_norm = np.clip((x - self._mean) / self._std, -10.0, 10.0)
 
             # Forward pass (pure numpy)
             h1  = np.maximum(0, x_norm @ self._w1 + self._b1)
@@ -447,8 +455,13 @@ class CorrectionModel:
             with open(config.CORRECTION_SCALER_PATH, "r") as fh:
                 sc = json.load(fh)
             self._mean = np.array(sc["mean"], dtype=np.float32)
-            self._std  = np.array(sc["std"],  dtype=np.float32)
-            self._std[self._std == 0] = 1.0
+            _MIN_STD = np.array(
+                [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 0.5, 0.05, 0.05, 0.05, 0.05],
+                dtype=np.float32,
+            )
+            self._std = np.maximum(
+                np.array(sc["std"], dtype=np.float32), _MIN_STD
+            )
 
             self._loaded = True
             logger.info("CorrectionModel loaded from %s", weights_path)
