@@ -247,12 +247,12 @@ def train_on_era5(data: np.ndarray) -> None:
         ),
     ]
 
-    print("\n  Обучение (может занять 10–20 мин на Pi 4)...")
+    print("\n  Обучение (может занять 5–15 мин на Pi 4)...")
     history = model.fit(
         X_tr, y_tr,
         validation_data=(X_v, y_v),
         epochs=100,
-        batch_size=32,
+        batch_size=512,   # larger batches → faster epochs on big ERA5 dataset
         callbacks=callbacks,
         verbose=1,
     )
@@ -288,10 +288,14 @@ def train_on_era5(data: np.ndarray) -> None:
     # ── Save a metrics stub so correction model knows the deployment time ─────
     import datetime
     try:
+        mae_t1 = float(np.mean(np.abs(y_pred_d[:, 0] - y_v_d[:, 0])))
+        mae_p1 = float(np.mean(np.abs(y_pred_d[:, 2] - y_v_d[:, 2])))
         metrics_stub = {
-            "source":     "era5_pretrain",
-            "val_loss":   best_val_loss,
-            "trained_at": datetime.datetime.utcnow().isoformat(),
+            "source":      "era5_pretrain",
+            "val_loss":    best_val_loss,
+            "mae_temp_1h": mae_t1,
+            "mae_pres_1h": mae_p1,
+            "trained_at":  datetime.datetime.utcnow().isoformat(),
         }
         os.makedirs(os.path.dirname(config.METRICS_PATH) or ".", exist_ok=True)
         with open(config.METRICS_PATH, "w") as fh:
