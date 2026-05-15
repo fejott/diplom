@@ -155,6 +155,8 @@ class CorrectionModel:
                     "FROM forecast_verification fv "
                     "JOIN forecast_log fl ON fv.forecast_id = fl.id "
                     "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                    "  AND fv.signed_error_temp_2h IS NOT NULL "
+                    "  AND fv.signed_error_temp_3h IS NOT NULL "
                     "  AND fl.mode IN ('lstm', 'lstm_corrected') "
                     "ORDER BY fl.timestamp"
                 ).fetchall()
@@ -324,7 +326,11 @@ class CorrectionModel:
             x_norm = np.clip((X - self._mean) / self._std, -10.0, 10.0)
             h1  = np.maximum(0, x_norm @ self._w1 + self._b1)
             h2  = np.maximum(0, h1     @ self._w2 + self._b2)
-            return (h2 @ self._w3 + self._b3).astype(np.float32)
+            out = (h2 @ self._w3 + self._b3).astype(np.float32)
+            # Clamp: cols 0-2 → temp corrections (°C), cols 3-5 → pres (hPa)
+            out[:, :3] = np.clip(out[:, :3], -5.0, 5.0)
+            out[:, 3:] = np.clip(out[:, 3:], -10.0, 10.0)
+            return out
         except Exception as exc:
             logger.warning("predict_correction_batch error: %s", exc)
             return np.zeros((len(X), 6), dtype=np.float32)
@@ -366,9 +372,11 @@ class CorrectionModel:
             # Forward pass (pure numpy)
             h1  = np.maximum(0, x_norm @ self._w1 + self._b1)
             h2  = np.maximum(0, h1     @ self._w2 + self._b2)
-            out = h2 @ self._w3 + self._b3
-
-            return out[0].astype(np.float32)
+            out = (h2 @ self._w3 + self._b3)[0].astype(np.float32)
+            # Clamp: indices 0-2 → temp corrections (°C), 3-5 → pres (hPa)
+            out[:3] = np.clip(out[:3], -5.0, 5.0)
+            out[3:] = np.clip(out[3:], -10.0, 10.0)
+            return out
         except Exception as exc:
             logger.warning("predict_correction error (returning zeros): %s", exc)
             return np.zeros(6, dtype=np.float32)
