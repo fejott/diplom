@@ -33,31 +33,26 @@ def _progress_bar(n: int, need: int) -> str:
 
 
 def cmd_correction_status(_args: argparse.Namespace) -> None:
-    """Show correction model status: verified count (current LSTM only), progress, trained/not."""
+    """Show correction model status: verified count (7-day window), progress, trained/not."""
+    from datetime import timedelta, datetime as _dt
     cm = CorrectionModel()
     ok, msg = cm.can_train(str(_RESEARCH_DB))
     since_ts = cm._get_lstm_trained_at()
 
-    # Count verified rows — filtered to current LSTM deployment
+    window_ts = (_dt.utcnow() - timedelta(days=7)).isoformat()
+
+    # Count verified rows — 7-day rolling window (same as can_train / train)
     try:
         import sqlite3
         with sqlite3.connect(str(_RESEARCH_DB)) as conn:
-            if since_ts:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
-                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                    "WHERE fv.signed_error_temp_1h IS NOT NULL "
-                    "  AND fl.mode IN ('lstm', 'lstm_corrected') "
-                    "  AND fl.timestamp >= ?",
-                    (since_ts,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
-                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                    "WHERE fv.signed_error_temp_1h IS NOT NULL "
-                    "  AND fl.mode IN ('lstm', 'lstm_corrected')"
-                ).fetchone()
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                "  AND fl.mode IN ('lstm', 'lstm_corrected') "
+                "  AND fl.timestamp >= ?",
+                (window_ts,),
+            ).fetchone()
         n = row[0] if row else 0
     except Exception:
         n = 0
@@ -87,16 +82,16 @@ def cmd_correction_status(_args: argparse.Namespace) -> None:
         except Exception:
             pass
 
-    since_line = f"  С момента деплоя LSTM: {since_ts[:16]}" if since_ts else ""
+    lstm_line = f"  Последний деплой LSTM: {since_ts[:16]}" if since_ts else ""
     lines = [
         "═" * 50,
         "  СТАТУС МОДЕЛИ КОРРЕКЦИИ",
         "═" * 50,
     ]
-    if since_line:
-        lines.append(since_line)
+    if lstm_line:
+        lines.append(lstm_line)
     lines += [
-        f"  Верифицировано: {n} / {need}",
+        f"  Верифицировано (7 дней): {n} / {need}",
         f"  [{bar}] {pct}%",
         f"  Модель обучена: {trained_str}",
     ]

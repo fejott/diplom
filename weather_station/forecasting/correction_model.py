@@ -25,7 +25,7 @@ import math
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import numpy as np
@@ -90,39 +90,30 @@ class CorrectionModel:
     def can_train(self, research_db_path: str) -> tuple[bool, str]:
         """Check whether enough verified rows exist to train.
 
-        Only counts verified rows produced by the *current* LSTM model
-        (forecast timestamp ≥ trained_at from metrics.json) so that stale
-        errors from previous model versions are not counted.
+        Uses a 7-day rolling window of verified LSTM forecasts so the
+        correction model is not blocked by frequent LSTM retrains resetting
+        the deployment timestamp.
 
         Returns:
             (ok, message) — ok is True when training is possible.
         """
-        since_ts = self._get_lstm_trained_at()
+        window_ts = (datetime.utcnow() - timedelta(days=7)).isoformat()
         try:
             with sqlite3.connect(research_db_path) as conn:
                 conn.row_factory = sqlite3.Row
-                if since_ts:
-                    row = conn.execute(
-                        "SELECT COUNT(*) AS n FROM forecast_verification fv "
-                        "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                        "WHERE fv.signed_error_temp_1h IS NOT NULL "
-                        "  AND fl.mode IN ('lstm', 'lstm_corrected') "
-                        "  AND fl.timestamp >= ?",
-                        (since_ts,),
-                    ).fetchone()
-                else:
-                    row = conn.execute(
-                        "SELECT COUNT(*) AS n FROM forecast_verification fv "
-                        "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                        "WHERE fv.signed_error_temp_1h IS NOT NULL "
-                        "  AND fl.mode IN ('lstm', 'lstm_corrected')"
-                    ).fetchone()
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                    "WHERE fv.signed_error_temp_1h IS NOT NULL "
+                    "  AND fl.mode IN ('lstm', 'lstm_corrected') "
+                    "  AND fl.timestamp >= ?",
+                    (window_ts,),
+                ).fetchone()
             n = row["n"] if row else 0
             need = config.CORRECTION_MIN_VERIFIED
-            since_str = f" (с {since_ts[:16]})" if since_ts else ""
             if n >= need:
-                return True, f"Достаточно данных{since_str}: {n} / {need}"
-            return False, f"Недостаточно данных{since_str}: {n} / {need}"
+                return True, f"Достаточно данных (7 дней): {n} / {need}"
+            return False, f"Недостаточно данных (7 дней): {n} / {need}"
         except Exception as exc:
             return False, f"Ошибка проверки БД: {exc}"
 
@@ -141,7 +132,11 @@ class CorrectionModel:
             return CorrectionResult(False, 0, None, None,
                                     f"TensorFlow недоступен: {exc}")
 
-        # ── Load data ────────────────────────────────────────────────────────
+        # ── Load data (7-day rolling window) ────────────────────────────────
+        # A fixed lookback window decouples correction training from the LSTM
+        # retrain schedule — frequent LSTM retrains would otherwise reset the
+        # since_ts counter and leave 0 eligible samples indefinitely.
+        window_ts = (datetime.utcnow() - timedelta(days=7)).isoformat()
         try:
             with sqlite3.connect(research_db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -158,22 +153,14 @@ class CorrectionModel:
                     "  AND fv.signed_error_temp_2h IS NOT NULL "
                     "  AND fv.signed_error_temp_3h IS NOT NULL "
                     "  AND fl.mode IN ('lstm', 'lstm_corrected') "
-                    "ORDER BY fl.timestamp"
+                    "  AND fl.timestamp >= ? "
+                    "ORDER BY fl.timestamp",
+                    (window_ts,),
                 ).fetchall()
+            logger.info("Correction train: %d rows (7-day window)", len(rows))
         except Exception as exc:
             return CorrectionResult(False, 0, None, None,
                                     f"Ошибка чтения БД: {exc}")
-
-        # Keep only forecasts produced by the current LSTM model
-        # (timestamp ≥ trained_at from metrics.json).  This prevents stale
-        # errors from previous model versions from contaminating training.
-        since_ts = self._get_lstm_trained_at()
-        if since_ts:
-            rows = [r for r in rows if r["timestamp"] >= since_ts]
-            logger.info(
-                "Correction train: %d rows after since filter (since=%s)",
-                len(rows), since_ts[:16],
-            )
 
         if len(rows) < config.CORRECTION_MIN_VERIFIED:
             return CorrectionResult(False, len(rows), None, None,
