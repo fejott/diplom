@@ -1,20 +1,21 @@
 """
 LSTM-based weather nowcaster.
 
-Training and inference both use full TensorFlow/Keras.
-The trained model is saved as a Keras SavedModel directory and reloaded
-on startup.  Training always runs in a background thread — it never
-blocks the sensor loop.
+The model is trained once on ERA5 reanalysis data (Saint Petersburg 2020–2025)
+and then frozen permanently.  Local adaptation is handled exclusively by the
+residual correction model (forecasting/correction_model.py).
+
+To retrain from scratch, run research/era5_pretrain.py manually.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import threading
-import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, List, Optional
+
+import threading
 
 import numpy as np
 
@@ -31,11 +32,13 @@ logger = get_logger("forecasting.lstm")
 
 
 class LSTMForecaster:
-    """LSTM weather nowcaster with background retraining.
+    """LSTM weather nowcaster — frozen ERA5 model with manual-only retraining.
 
     Args:
-        data_store: DataStore instance used by _retrain_if_needed().
+        data_store: DataStore instance used by is_ready().
     """
+
+    FROZEN = True  # LSTM is frozen; use correction model for local adaptation
 
     def __init__(self, data_store: "DataStore") -> None:
         self._data_store   = data_store
@@ -43,10 +46,6 @@ class LSTMForecaster:
         self._scaler_min: Optional[np.ndarray] = None
         self._scaler_max: Optional[np.ndarray] = None
         self._last_val_loss: float = 1.0
-        self._last_train_count: int = 0
-        self._last_train_time: float = 0.0
-        self._is_training: bool = False
-        self._training_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
         # Pre-import TensorFlow in the main thread so the background training
@@ -159,7 +158,11 @@ class LSTMForecaster:
             return RuleForecaster().predict(recent)
 
     def train(self, readings: List[WeatherData]) -> Dict:
-        """Train LSTM on *readings*, save as Keras SavedModel, reload.
+        """Train LSTM on *readings* (manual-only — model is frozen for normal operation).
+
+        This method must only be called from research/era5_pretrain.py or
+        research/calibration_cli.py.  Calling it from main.py or any other
+        context raises RuntimeError.
 
         Args:
             readings: Full chronological history from DataStore.
@@ -167,6 +170,14 @@ class LSTMForecaster:
         Returns:
             Dict with metric keys, or empty dict on failure.
         """
+        import inspect as _inspect
+        _caller = _inspect.stack()[1].filename
+        if self.FROZEN and "era5_pretrain" not in _caller and "calibration_cli" not in _caller:
+            raise RuntimeError(
+                "LSTM is frozen. Use the correction model for local adaptation. "
+                "To retrain from scratch, run research/era5_pretrain.py manually."
+            )
+
         if not self._tf_available:
             logger.error("TensorFlow not available — cannot train.")
             return {}
@@ -322,80 +333,6 @@ class LSTMForecaster:
             self._model = model
 
         return metrics
-
-    def _retrain_if_needed(self, research=None) -> None:
-        """Trigger background retraining when thresholds are met."""
-        if self._is_training:
-            return
-
-        current_count    = self._data_store.count()
-        time_since_train = time.monotonic() - self._last_train_time
-
-        first_run       = self._last_train_time == 0.0
-        enough_new_data = current_count >= self._last_train_count + config.RETRAIN_THRESHOLD
-        enough_time     = first_run or time_since_train >= config.LSTM_RETRAIN_INTERVAL
-
-        if not (enough_new_data and enough_time):
-            return
-
-        readings       = self._data_store.get_all()
-        self._is_training = True
-        snapshot_count = current_count
-
-        # Path for the cross-process exclusive lock file.  fcntl.flock() is
-        # automatically released if the process dies, so no stale lock files.
-        _lock_dir  = os.path.dirname(config.WEIGHTS_PATH) or '.'
-        _lock_path = os.path.join(_lock_dir, '.lstm_training.lock')
-
-        def _run():
-            import fcntl as _fcntl
-            _lock_fd = None
-            t0 = time.monotonic()
-            try:
-                os.makedirs(_lock_dir, exist_ok=True)
-                _lock_fd = open(_lock_path, 'w')
-                try:
-                    _fcntl.flock(_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-                except (IOError, OSError):
-                    logger.info(
-                        "Cross-process training lock busy — another main.py is "
-                        "already training. Skipping this run (count=%d).",
-                        snapshot_count,
-                    )
-                    return
-
-                metrics  = self.train(readings)
-                duration = time.monotonic() - t0
-                self._last_train_count = snapshot_count
-                self._last_train_time  = time.monotonic()
-                logger.info("Background retrain complete (count=%d).", snapshot_count)
-
-                if research is not None and metrics:
-                    try:
-                        research.log_lstm_training({
-                            "readings_count": snapshot_count,
-                            "mae_temp":       metrics.get("mae_temp_1h", 0.0),
-                            "mae_pressure":   metrics.get("mae_pres_1h", 0.0),
-                            "rmse_temp":      metrics.get("rmse_temp_1h", 0.0),
-                            "rmse_pressure":  metrics.get("rmse_pres_1h", 0.0),
-                            "duration_sec":   round(duration, 2),
-                        })
-                    except Exception as exc:
-                        logger.warning("research.log_lstm_training error: %s", exc)
-            except Exception as exc:
-                logger.error("Background retrain failed: %s", exc)
-            finally:
-                if _lock_fd is not None:
-                    try:
-                        _fcntl.flock(_lock_fd, _fcntl.LOCK_UN)
-                        _lock_fd.close()
-                    except Exception:
-                        pass
-                self._is_training = False
-
-        self._training_thread = threading.Thread(target=_run, daemon=True, name="lstm-train")
-        self._training_thread.start()
-        logger.info("Background retraining started (count=%d).", current_count)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

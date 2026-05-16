@@ -45,10 +45,6 @@ FILTER_PRESSURE_MIN: float = 870.0  # hPa (world record low + margin)
 FILTER_PRESSURE_MAX: float = 1085.0 # hPa (world record high + margin)
 FILTER_IQR_MULTIPLIER: float = 3.0  # spikes beyond Q1/Q3 ± N*IQR are removed
 
-# Forecasting — retraining schedule
-LSTM_RETRAIN_INTERVAL: int = 86400  # seconds between retrains (1 day max)
-RETRAIN_THRESHOLD: int = 1000       # new readings needed to trigger a retrain (~8h at 30s)
-
 # Online / hybrid forecasting
 ONLINE_FORECAST_ENABLED: bool = True   # set False to force LSTM-only mode
 INTERNET_CHECK_URL: str      = "https://api.open-meteo.com"

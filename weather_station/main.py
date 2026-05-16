@@ -198,7 +198,6 @@ def main() -> None:
                     recent_readings,
                     current_weather=weather_data,
                 )
-                lstm_forecaster._retrain_if_needed(research)
             except Exception as exc:
                 logger.error("Forecast error: %s", exc)
 

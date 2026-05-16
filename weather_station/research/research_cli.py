@@ -44,7 +44,7 @@ def _quick_status() -> str:
         n_verify   = c.execute(
             "SELECT COUNT(*) FROM forecast_verification WHERE verified_1h=1"
         ).fetchone()[0]
-        n_lstm     = c.execute("SELECT COUNT(*) FROM lstm_training_log").fetchone()[0]
+        n_corrections = c.execute("SELECT COUNT(*) FROM lstm_training_log").fetchone()[0]
 
         # Period
         first_ts = c.execute("SELECT MIN(timestamp) FROM sensor_log").fetchone()[0]
@@ -75,7 +75,8 @@ def _quick_status() -> str:
         f"  Измерений:      {n_sensor}",
         f"  Прогнозов:      {n_fc}  ({mode_str})",
         f"  Верифицировано: {n_verify}",
-        f"  LSTM обучений:  {n_lstm}",
+        f"  LSTM модель:    заморожена (ERA5, обучена 1 раз)",
+        f"  Коррекций:      {n_corrections}",
     ]
 
     if accuracy:

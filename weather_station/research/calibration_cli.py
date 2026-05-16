@@ -567,6 +567,74 @@ def cmd_backfill_signed_errors(_args: argparse.Namespace) -> None:
     print("═" * 60)
 
 
+def cmd_lstm_status(_args: argparse.Namespace) -> None:
+    """Show frozen LSTM status: parameter count, file path, and last validation MAE."""
+    weights_file = config.WEIGHTS_PATH
+    if not weights_file.endswith(".npz"):
+        weights_file += ".npz"
+
+    # Count total parameters from weights .npz
+    param_count = 0
+    if os.path.exists(weights_file):
+        try:
+            import numpy as np
+            data = np.load(weights_file, allow_pickle=False)
+            param_count = sum(data[k].size for k in data.files)
+        except Exception as exc:
+            param_count = -1
+            param_err = str(exc)
+        else:
+            param_err = None
+    else:
+        param_err = "файл не найден"
+
+    # Read mae_temp_1h from metrics.json
+    mae_base = None
+    if os.path.exists(config.METRICS_PATH):
+        try:
+            with open(config.METRICS_PATH, "r") as fh:
+                metrics = json.load(fh)
+            mae_base = metrics.get("mae_temp_1h")
+        except Exception:
+            pass
+
+    # Read mae_after from correction_meta.json
+    mae_after = None
+    if os.path.exists(config.CORRECTION_META_PATH):
+        try:
+            with open(config.CORRECTION_META_PATH, "r") as fh:
+                meta = json.load(fh)
+            mae_after = meta.get("mae_after")
+        except Exception:
+            pass
+
+    lines = [
+        "═" * 50,
+        "  СТАТУС LSTM МОДЕЛИ",
+        "═" * 50,
+        "  Статус:          ЗАМОРОЖЕНА",
+        f"  Файл весов:      {weights_file}",
+        "  Обучена на:      ERA5 (СПб 2020–2025), 1 раз",
+    ]
+    if param_err:
+        lines.append(f"  Параметры:       ошибка — {param_err}")
+    else:
+        lines.append(f"  Параметры:       {param_count:,}")
+
+    if mae_base is not None:
+        lines.append(f"  MAE темп +1ч:    {mae_base:.4f}°C  (без коррекции)")
+    else:
+        lines.append("  MAE темп +1ч:    — (metrics.json не найден)")
+
+    if mae_after is not None:
+        lines.append(f"  MAE темп +1ч:    {mae_after:.4f}°C  (с коррекцией)")
+    else:
+        lines.append("  MAE темп +1ч:    — (коррекция не обучена)")
+
+    lines.append("═" * 50)
+    print("\n".join(lines))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="calibration_cli",
@@ -579,6 +647,7 @@ def main() -> None:
     sub.add_parser("rollback-correction",    help="Delete correction model files")
     sub.add_parser("validate",               help="Held-out validation: LSTM vs correction vs API")
     sub.add_parser("backfill-signed-errors", help="Backfill signed errors for old LSTM verifications")
+    sub.add_parser("lstm-status",            help="Show frozen LSTM model status")
 
     args = parser.parse_args()
     dispatch = {
@@ -587,6 +656,7 @@ def main() -> None:
         "rollback-correction":    cmd_rollback_correction,
         "validate":               cmd_validate,
         "backfill-signed-errors": cmd_backfill_signed_errors,
+        "lstm-status":            cmd_lstm_status,
     }
     dispatch[args.command](args)
 
