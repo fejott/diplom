@@ -575,17 +575,21 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("correction-status",      help="Show correction model status")
+    sub.add_parser("status",                 help="Alias for correction-status")
     sub.add_parser("train-correction",       help="Train the correction model")
     sub.add_parser("rollback-correction",    help="Delete correction model files")
     sub.add_parser("validate",               help="Held-out validation: LSTM vs correction vs API")
+    sub.add_parser("report",                 help="Alias for validate")
     sub.add_parser("backfill-signed-errors", help="Backfill signed errors for old LSTM verifications")
 
     args = parser.parse_args()
     dispatch = {
         "correction-status":      cmd_correction_status,
+        "status":                 cmd_correction_status,
         "train-correction":       cmd_train_correction,
         "rollback-correction":    cmd_rollback_correction,
         "validate":               cmd_validate,
+        "report":                 cmd_validate,
         "backfill-signed-errors": cmd_backfill_signed_errors,
     }
     dispatch[args.command](args)
