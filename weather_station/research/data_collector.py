@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS cycle_timing (
     total_ms    REAL,
     mode_used   TEXT
 );
+
+CREATE TABLE IF NOT EXISTS hazard_log (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT NOT NULL,
+    level            TEXT,
+    phenomenon       TEXT,
+    pressure_trend   REAL,
+    temp_drop_30m    REAL,
+    humidity         REAL,
+    triggered_rules  TEXT
+);
 """
 
 
@@ -130,6 +141,7 @@ class ResearchCollector:
         self._lock     = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         self._last_sensor_ts: Optional[datetime] = None
+        self._last_hazard_level: str = "NORMAL"
 
         try:
             conn = sqlite3.connect(
@@ -311,6 +323,33 @@ class ResearchCollector:
             )
         except Exception as exc:
             logger.warning("log_lstm_training error: %s", exc)
+
+    def log_hazard(self, alert) -> None:
+        """Log hazard alert only when level changes."""
+        try:
+            if alert is None:
+                return
+            if alert.level == self._last_hazard_level:
+                return
+            self._last_hazard_level = alert.level
+            import json
+            self._run(
+                "INSERT INTO hazard_log "
+                "(timestamp, level, phenomenon, pressure_trend, "
+                " temp_drop_30m, humidity, triggered_rules) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    datetime.utcnow().isoformat(),
+                    alert.level,
+                    alert.phenomenon,
+                    alert.pressure_trend_1h,
+                    alert.temp_drop_30m,
+                    alert.humidity,
+                    json.dumps(alert.triggered_rules),
+                ),
+            )
+        except Exception as exc:
+            logger.warning("log_hazard error: %s", exc)
 
     def log_timing(self, timings: dict) -> None:
         """Insert one row to cycle_timing."""

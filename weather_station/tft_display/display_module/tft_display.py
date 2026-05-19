@@ -130,10 +130,14 @@ class TFTDisplay:
         img  = Image.new('RGB', (self.WIDTH, self.HEIGHT), C['bg'])
         draw = ImageDraw.Draw(img)
 
+        hazard = data.get('hazard')
+
         self._draw_header(draw, data.get('timestamp'))
         self._draw_sensors(draw, data)
         self._draw_gps(draw, data)
-        self._draw_forecast(draw, data.get('forecast'), data.get('data_count', 0))
+        if hazard is not None and hazard.level != "NORMAL":
+            self._draw_hazard_badge(draw, hazard)
+        self._draw_forecast(draw, data.get('forecast'), data.get('data_count', 0), hazard=hazard)
         self._draw_footer(draw)
 
         self._device.display(img)
@@ -233,7 +237,7 @@ class TFTDisplay:
         if trend < -0.5: return '▼'
         return '—'
 
-    def _draw_forecast(self, draw: ImageDraw.ImageDraw, forecast, data_count: int) -> None:
+    def _draw_forecast(self, draw: ImageDraw.ImageDraw, forecast, data_count: int, hazard=None) -> None:
         """Forecast section — unified table for all modes.  Occupies y 195–308 (113 px).
 
         Layout (after 14 px header bar):
@@ -251,6 +255,17 @@ class TFTDisplay:
         top = 195
         draw.line([(0, top), (W, top)], fill=C['accent'], width=1)
         draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
+
+        # ── Hazard warning line ───────────────────────────────────────────────
+        level_colors = {
+            "WATCH":   (255, 200, 50),
+            "WARNING": (255, 130, 30),
+            "DANGER":  (220, 40,  40),
+        }
+        if hazard is not None and hazard.level in level_colors:
+            col = level_colors[hazard.level]
+            draw.text((10, 196), f"⚠ {hazard.phenomenon[:26]}",
+                      font=self.f_tiny, fill=col)
 
         # ── No forecast ───────────────────────────────────────────────────────
         if forecast is None:
@@ -337,6 +352,24 @@ class TFTDisplay:
                 min_r = 500
             draw.text((10, y), f'Накоплено: {data_count}/{min_r}',
                       font=self.f_tiny, fill=C['gray'])
+
+    def _draw_hazard_badge(self, draw, hazard) -> None:
+        """Small coloured badge overlaid on GPS section bottom-right."""
+        level_colors = {
+            "WATCH":   (255, 200, 50),
+            "WARNING": (255, 130, 30),
+            "DANGER":  (220, 40,  40),
+        }
+        col = level_colors.get(hazard.level, (128, 128, 128))
+        bx1, by1, bx2, by2 = 120, 176, 234, 193
+        draw.rectangle([(bx1, by1), (bx2, by2)], fill=col)
+        text = hazard.phenomenon[:16]
+        try:
+            tw = draw.textlength(text, font=self.f_tiny)
+        except Exception:
+            tw = len(text) * 6
+        tx = bx1 + (bx2 - bx1 - tw) / 2
+        draw.text((tx, by1 + 2), text, font=self.f_tiny, fill=(255, 255, 255))
 
     def _draw_footer(self, draw: ImageDraw.ImageDraw) -> None:
         """Thin footer bar at the very bottom.  Occupies y 308–320."""

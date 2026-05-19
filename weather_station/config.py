@@ -23,6 +23,7 @@ LOG_BACKUP_COUNT: int = 3
 
 # Forecasting — storage
 DB_PATH: str = "weather_history.db"
+HAZARD_BUFFER_SIZE: int = 60    # raw readings to feed hazard detector (~30 min at 30s)
 MODEL_PATH: str = "forecasting/lstm_model.h5"     # kept for reference
 WEIGHTS_PATH: str = "forecasting/lstm_weights.npz" # numpy weights (no TF serialization)
 SCALER_PATH: str = "forecasting/scaler_params.json"

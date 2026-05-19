@@ -22,6 +22,7 @@ from terminal.terminal_display import display as terminal_display
 from forecasting import DataStore, LSTMForecaster, RuleForecaster
 from forecasting import HybridForecaster, correct_pressure_to_sea_level
 from forecasting.forecast_result import ForecastResult
+from forecasting.hazard_detector import HazardDetector, HazardAlert
 from sensors.bme280_sensor import BME280Sensor, WeatherData
 from sensors.gps_sensor import GPSSensor, GpsData
 from research.data_collector import ResearchCollector
@@ -112,6 +113,7 @@ def main() -> None:
     lstm_forecaster = LSTMForecaster(data_store)
     rule_forecaster = RuleForecaster()
     hybrid          = HybridForecaster(data_store, lstm_forecaster, rule_forecaster)
+    hazard_detector = HazardDetector()
 
     # ── Research data collector ───────────────────────────────────────────────
     research = ResearchCollector()
@@ -185,6 +187,16 @@ def main() -> None:
                 except Exception as exc:
                     logger.error("DataStore.save error: %s", exc)
 
+            # ── Hazard detection ──────────────────────────────────────────────────
+            hazard_alert: Optional[HazardAlert] = None
+            if weather_data is not None:
+                try:
+                    hazard_alert = hazard_detector.detect(
+                        data_store.get_last_n(config.HAZARD_BUFFER_SIZE)
+                    )
+                except Exception as exc:
+                    logger.warning("HazardDetector error: %s", exc)
+
             # ── Forecast (hybrid: online API → LSTM → rules) ──────────────────
             forecast: Optional[ForecastResult] = None
             lstm_shadow: Optional[ForecastResult] = None
@@ -224,6 +236,8 @@ def main() -> None:
                 # Log shadow LSTM forecast separately so correction model has data
                 if lstm_shadow is not None:
                     research.log_forecast(lstm_shadow, weather_data)
+                if hazard_alert is not None:
+                    research.log_hazard(hazard_alert)
                 research.log_timing({
                     "bme280_ms":   bme280_ms,
                     "gps_ms":      gps_ms,
@@ -235,7 +249,7 @@ def main() -> None:
                 logger.warning("Research logging error: %s", exc)
 
             # Terminal display
-            terminal_display(weather_data, gps_data, forecast, data_count)
+            terminal_display(weather_data, gps_data, forecast, data_count, hazard_alert)
 
             # TFT display
             if tft is not None:
@@ -250,6 +264,7 @@ def main() -> None:
                     'timestamp':   time.time(),
                     'forecast':    forecast,
                     'data_count':  data_count,
+                    'hazard':      hazard_alert,
                 }
                 try:
                     tft.render(tft_data)

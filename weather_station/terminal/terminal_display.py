@@ -65,6 +65,7 @@ def display(
     gps: Optional[GpsData],
     forecast=None,
     data_count: int = 0,
+    hazard=None,
 ) -> None:
     """Clear the terminal and render the weather/GPS/forecast table.
 
@@ -116,6 +117,27 @@ def display(
         lines.append(_row("⚠  GPS SENSOR ERROR"))
 
     lines.append(_hline())
+
+    # ── Hazard alert block ────────────────────────────────────────────────
+    if hazard is not None and hazard.level != "NORMAL":
+        lines.append(_hline())
+        if hazard.level == "WATCH":
+            lines.append(_row(f"🌦 {hazard.phenomenon}"))
+            if hazard.description:
+                lines.append(_row(f"  {hazard.description[:_INNER-3]}"))
+        elif hazard.level == "WARNING":
+            lines.append(_row(f"⚠  {hazard.phenomenon}"))
+            lines.append(_row(
+                f"  Давл: {hazard.pressure_trend_1h:+.1f} hPa/ч"
+                f"  Влаж: {hazard.humidity:.0f}%"
+            ))
+        elif hazard.level == "DANGER":
+            lines.append(_row("\033[5m" + f"‼  {hazard.phenomenon}" + "\033[0m"))
+            lines.append(_row(f"  {hazard.description[:_INNER-3]}"))
+            lines.append(_row(
+                f"  Давл: {hazard.pressure_trend_1h:+.1f} hPa/ч"
+                f"  Темп: -{hazard.temp_drop_30m:.1f}°C"
+            ))
 
     # ── Forecast section ──────────────────────────────────────────────────
     if forecast is not None:

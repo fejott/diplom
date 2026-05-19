@@ -9,6 +9,7 @@ from .gps_pressure_correction import (
     validate_gps_for_forecast,
     format_coordinates,
 )
+from .hazard_detector import HazardDetector, HazardAlert
 
 __all__ = [
     'DataStore',
@@ -21,4 +22,6 @@ __all__ = [
     'correct_pressure_to_sea_level',
     'validate_gps_for_forecast',
     'format_coordinates',
+    'HazardDetector',
+    'HazardAlert',
 ]
