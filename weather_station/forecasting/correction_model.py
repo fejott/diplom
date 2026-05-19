@@ -466,7 +466,7 @@ class CorrectionModel:
                 sc = json.load(fh)
             self._mean = np.array(sc["mean"], dtype=np.float32)
             _MIN_STD = np.array(
-                [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 0.5, 0.05, 0.05, 0.05, 0.05],
+                [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 0.5, 0.05, 0.05, 0.05, 0.05, 0.5],
                 dtype=np.float32,
             )
             self._std = np.maximum(
