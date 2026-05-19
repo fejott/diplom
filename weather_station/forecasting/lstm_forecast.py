@@ -146,9 +146,12 @@ class LSTMForecaster:
                 model_version="lstm_v1",
             )
 
-            # Apply residual correction if model is ready
+            # Apply residual correction if model is ready.
+            # Pass the actual current temperature so the correction model
+            # can distinguish warm vs. cold weather regimes.
             if self._correction.is_ready():
-                deltas = self._correction.predict_correction(result)
+                current_temp = recent[-1].temperature if recent else 0.0
+                deltas = self._correction.predict_correction(result, current_temp=current_temp)
                 result = self._correction.apply_correction(result, deltas)
             return result
 

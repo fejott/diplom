@@ -345,8 +345,10 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         sin_dow  = np.sin(2 * np.pi * weekdays /  7).astype(np.float32)
         cos_dow  = np.cos(2 * np.pi * weekdays /  7).astype(np.float32)
 
-        # Current pressure at the time of each forecast (last reading of context)
+        # Current pressure and temperature at the time of each forecast
+        # (last reading of the input context window)
         cur_pres   = data_raw[seq - 1: seq - 1 + n_seqs, 2]        # (n_seqs,)
+        cur_temp   = data_raw[seq - 1: seq - 1 + n_seqs, 0]        # (n_seqs,)
         pres_trend = y_pred[:, (n_steps - 1) * 3 + 2] - cur_pres   # (n_seqs,)
 
         X_corr = np.column_stack([
@@ -358,7 +360,8 @@ def cmd_validate(_args: argparse.Namespace) -> None:
             y_pred[:, 8],   # pres_3h
             pres_trend,
             sin_h, cos_h, sin_dow, cos_dow,
-        ]).astype(np.float32)  # (n_seqs, 11)
+            cur_temp,       # actual sensor temp at forecast time (regime detection)
+        ]).astype(np.float32)  # (n_seqs, 12)
 
         deltas = cm.predict_correction_batch(X_corr)  # (n_seqs, 6)
 

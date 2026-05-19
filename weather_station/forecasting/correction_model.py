@@ -7,11 +7,12 @@ Inference is pure numpy (no TF dependency at runtime).
 TensorFlow is imported only inside train().
 
 Architecture:
-    11 inputs → Dense(32, ReLU) → Dropout(0.1) → Dense(16, ReLU) → Dense(6, linear)
+    12 inputs → Dense(64, ReLU) → Dropout(0.1) → Dense(32, ReLU) → Dense(6, linear)
 
-Inputs (11):
+Inputs (12):
     temp_1h, temp_2h, temp_3h, pres_1h, pres_2h, pres_3h,
-    pressure_trend, sin_hour, cos_hour, sin_dow, cos_dow
+    pressure_trend, sin_hour, cos_hour, sin_dow, cos_dow,
+    current_temp  ← actual sensor reading at forecast time (key for regime detection)
 
 Outputs (6):
     delta_temp_1h, delta_temp_2h, delta_temp_3h,
@@ -140,11 +141,20 @@ class CorrectionModel:
         try:
             with sqlite3.connect(research_db_path) as conn:
                 conn.row_factory = sqlite3.Row
+                # Attach weather_history.db to pull the actual sensor temperature
+                # at the moment each forecast was made — this is the key feature
+                # that lets the model distinguish warm vs. cold weather regimes.
+                conn.execute("ATTACH DATABASE ? AS wdb", (config.DB_PATH,))
                 rows = conn.execute(
                     "SELECT "
                     "  fl.temp_1h, fl.temp_2h, fl.temp_3h, "
                     "  fl.pressure_1h, fl.pressure_2h, fl.pressure_3h, "
                     "  fl.pressure_trend, fl.timestamp, "
+                    "  COALESCE(("
+                    "    SELECT r.temperature FROM wdb.readings r"
+                    "    WHERE r.timestamp <= fl.timestamp"
+                    "    ORDER BY r.timestamp DESC LIMIT 1"
+                    "  ), fl.temp_1h) AS current_temp, "
                     "  fv.signed_error_temp_1h, fv.signed_error_temp_2h, fv.signed_error_temp_3h, "
                     "  fv.signed_error_pres_1h, fv.signed_error_pres_2h, fv.signed_error_pres_3h "
                     "FROM forecast_verification fv "
@@ -187,6 +197,7 @@ class CorrectionModel:
                 r["pressure_3h"]    or 0.0,
                 r["pressure_trend"] or 0.0,
                 sin_h, cos_h, sin_dow, cos_dow,
+                r["current_temp"]   or 0.0,   # actual sensor temp at forecast time
             ]
             y = [
                 r["signed_error_temp_1h"] or 0.0,
@@ -208,9 +219,9 @@ class CorrectionModel:
         # Clamp to a minimum that reflects natural weather variability so that
         # inference on data outside the training window doesn't explode.
         # Feature order: temp_1h, temp_2h, temp_3h, pres_1h, pres_2h, pres_3h,
-        #                pres_trend, sin_h, cos_h, sin_dow, cos_dow
+        #                pres_trend, sin_h, cos_h, sin_dow, cos_dow, current_temp
         _MIN_STD = np.array(
-            [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 0.5, 0.05, 0.05, 0.05, 0.05],
+            [0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 0.5, 0.05, 0.05, 0.05, 0.05, 0.5],
             dtype=np.float32,
         )
         std = np.maximum(std, _MIN_STD)
@@ -226,10 +237,10 @@ class CorrectionModel:
 
         # ── Build Keras model ────────────────────────────────────────────────
         model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(11,)),
-            tf.keras.layers.Dense(32, activation='relu'),
+            tf.keras.layers.Input(shape=(12,)),
+            tf.keras.layers.Dense(64, activation='relu'),
             tf.keras.layers.Dropout(0.1),
-            tf.keras.layers.Dense(16, activation='relu'),
+            tf.keras.layers.Dense(32, activation='relu'),
             tf.keras.layers.Dense(6),
         ])
         model.compile(
@@ -299,10 +310,10 @@ class CorrectionModel:
         """Batch-predict corrections for N samples.
 
         Args:
-            X: (N, 11) float32 feature matrix — same column order as the
+            X: (N, 12) float32 feature matrix — same column order as the
                single-sample path: temp_1h, temp_2h, temp_3h,
                pres_1h, pres_2h, pres_3h, pressure_trend,
-               sin_h, cos_h, sin_dow, cos_dow.
+               sin_h, cos_h, sin_dow, cos_dow, current_temp.
 
         Returns:
             (N, 6) float32 delta array, or np.zeros((N, 6)) on any error.
@@ -315,18 +326,21 @@ class CorrectionModel:
             h2  = np.maximum(0, h1     @ self._w2 + self._b2)
             out = (h2 @ self._w3 + self._b3).astype(np.float32)
             # Clamp: cols 0-2 → temp corrections (°C), cols 3-5 → pres (hPa)
-            out[:, :3] = np.clip(out[:, :3], -5.0, 5.0)
+            out[:, :3] = np.clip(out[:, :3], -8.0, 8.0)
             out[:, 3:] = np.clip(out[:, 3:], -10.0, 10.0)
             return out
         except Exception as exc:
             logger.warning("predict_correction_batch error: %s", exc)
             return np.zeros((len(X), 6), dtype=np.float32)
 
-    def predict_correction(self, base_forecast) -> np.ndarray:
+    def predict_correction(self, base_forecast, current_temp: float = 0.0) -> np.ndarray:
         """Predict residual corrections for a base forecast.
 
         Args:
             base_forecast: ForecastResult from the base LSTM.
+            current_temp:  Actual sensor temperature (°C) at the time of
+                           the forecast — the key feature for warm/cold
+                           regime detection.  Defaults to 0.0 if unavailable.
 
         Returns:
             np.ndarray of shape (6,) — deltas for
@@ -352,6 +366,7 @@ class CorrectionModel:
                 base_forecast.pressure_in_3h or 0.0,
                 base_forecast.pressure_trend or 0.0,
                 sin_h, cos_h, sin_dow, cos_dow,
+                float(current_temp),          # actual sensor temp at forecast time
             ]], dtype=np.float32)
 
             x_norm = np.clip((x - self._mean) / self._std, -10.0, 10.0)
@@ -361,7 +376,7 @@ class CorrectionModel:
             h2  = np.maximum(0, h1     @ self._w2 + self._b2)
             out = (h2 @ self._w3 + self._b3)[0].astype(np.float32)
             # Clamp: indices 0-2 → temp corrections (°C), 3-5 → pres (hPa)
-            out[:3] = np.clip(out[:3], -5.0, 5.0)
+            out[:3] = np.clip(out[:3], -8.0, 8.0)
             out[3:] = np.clip(out[3:], -10.0, 10.0)
             return out
         except Exception as exc:
