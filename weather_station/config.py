@@ -40,8 +40,8 @@ MAX_RAM_MB: int = 400
 LSTM_MAX_TRAIN_READINGS: int = 10_000  # cap training to most recent N readings
 
 # Forecasting — data filtering
-FILTER_TEMP_MIN: float    = -40.0   # °C  (BME280 operating range)
-FILTER_TEMP_MAX: float    =  85.0   # °C
+FILTER_TEMP_MIN: float    = -50.0   # °C  (BME280 operating range)
+FILTER_TEMP_MAX: float    =  45.0   # °C
 FILTER_PRESSURE_MIN: float = 870.0  # hPa (world record low + margin)
 FILTER_PRESSURE_MAX: float = 1085.0 # hPa (world record high + margin)
 FILTER_IQR_MULTIPLIER: float = 3.0  # spikes beyond Q1/Q3 ± N*IQR are removed
