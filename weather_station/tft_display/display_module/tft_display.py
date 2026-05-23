@@ -170,18 +170,26 @@ class TFTDisplay:
 
     def _draw_sensors(self, draw: ImageDraw.ImageDraw, data: dict) -> None:
         """Three sensor rows.  Occupies y 38–143."""
+        bme_ok = data.get('bme_ok', True)
+        if not bme_ok:
+            # Red error banner across the entire sensors section
+            draw.rectangle([(0, 38), (self.WIDTH, 56)], fill=(160, 20, 20))
+            draw.text((8, 41), '⚠ BME280 НЕДОСТУПЕН', font=self.f_label,
+                      fill=(255, 255, 255))
+            draw.line([(0, 56), (self.WIDTH, 56)], fill=C['divider'], width=1)
+
         rows = [
             ('TEMPERATURE', data.get('temperature'), '{:.1f} °C',  'white'),
             ('HUMIDITY',    data.get('humidity'),    '{:.1f} %',   'blue'),
             ('PRESSURE',    data.get('pressure'),    '{:.1f} hPa', 'green'),
         ]
-        y = 38
+        y = 38 if bme_ok else 57
         for label, value, fmt, col_key in rows:
             draw.text((10, y + 2), label, font=self.f_label, fill=C['gray'])
             text  = fmt.format(value) if value is not None else '---'
             color = C[col_key]       if value is not None else C['gray']
             draw.text((10, y + 14), text, font=self.f_value, fill=color)
-            y += 35
+            y += 35 if bme_ok else 28
             draw.line([(8, y), (self.WIDTH - 8, y)], fill=C['divider'], width=1)
         # y ends at 143
 
@@ -192,32 +200,39 @@ class TFTDisplay:
         draw.rectangle([(0, top), (W, top + 14)], fill=C['header'])
         draw.line([(0, top), (W, top)], fill=C['accent'], width=1)
 
+        gps_ok    = data.get('gps_ok', True)
         gps_fix   = data.get('gps_fix', False)
         latitude  = data.get('latitude')
         longitude = data.get('longitude')
         altitude  = data.get('altitude')
 
-        fix_col  = C['green'] if gps_fix else C['orange']
-        dot      = '●' if gps_fix else '○'
-        fix_text = f'GPS {dot} {"FIX" if gps_fix else "SEARCHING..."}'
-        draw.text((10, top + 2), fix_text, font=self.f_label, fill=fix_col)
-
-        y    = top + 17
-        ccol = C['white'] if gps_fix else C['gray']
-
-        if gps_fix and latitude is not None and longitude is not None:
-            ns = 'N' if latitude  >= 0 else 'S'
-            ew = 'E' if longitude >= 0 else 'W'
-            # Lat + lon on one line to save vertical space
-            draw.text((10, y),
-                      f'{abs(latitude):.4f}°{ns}  {abs(longitude):.4f}°{ew}',
-                      font=self.f_tiny, fill=ccol)
-            y += 13
-            if altitude is not None:
-                draw.text((10, y), f'ALT {altitude:.0f} m',
-                          font=self.f_tiny, fill=ccol)
+        if not gps_ok:
+            # GPS device not connected at all
+            draw.text((10, top + 2), 'GPS ✗ НЕДОСТУПЕН',
+                      font=self.f_label, fill=(220, 40, 40))
+            draw.text((10, top + 17), 'Устройство не найдено',
+                      font=self.f_tiny, fill=C['gray'])
         else:
-            draw.text((10, y), 'Ожидание сигнала...', font=self.f_tiny, fill=C['gray'])
+            fix_col  = C['green'] if gps_fix else C['orange']
+            dot      = '●' if gps_fix else '○'
+            fix_text = f'GPS {dot} {"FIX" if gps_fix else "ПОИСК СИГНАЛА..."}'
+            draw.text((10, top + 2), fix_text, font=self.f_label, fill=fix_col)
+
+            y    = top + 17
+            ccol = C['white'] if gps_fix else C['gray']
+
+            if gps_fix and latitude is not None and longitude is not None:
+                ns = 'N' if latitude  >= 0 else 'S'
+                ew = 'E' if longitude >= 0 else 'W'
+                draw.text((10, y),
+                          f'{abs(latitude):.4f}°{ns}  {abs(longitude):.4f}°{ew}',
+                          font=self.f_tiny, fill=ccol)
+                y += 13
+                if altitude is not None:
+                    draw.text((10, y), f'ALT {altitude:.0f} m',
+                              font=self.f_tiny, fill=ccol)
+            else:
+                draw.text((10, y), 'Ожидание сигнала...', font=self.f_tiny, fill=C['gray'])
 
         # Bottom divider — forecast starts below here
         draw.line([(0, 195), (W, 195)], fill=C['divider'], width=1)
@@ -277,18 +292,17 @@ class TFTDisplay:
         internet = getattr(forecast, 'internet_available', None)
         gps_used = getattr(forecast, 'gps_used', False)
         lstm_rdy = getattr(forecast, 'lstm_ready', True)
+        no_net   = (internet is False and config.ONLINE_FORECAST_ENABLED)
 
         # ── Header bar label ──────────────────────────────────────────────────
         if method == 'online_api':
             label, col = '🌐 Online API',    C['cyan']
-        elif method == 'lstm':
-            label, col = '🤖 Авт. LSTM',     C['purple']
+        elif method in ('lstm', 'lstm_corrected'):
+            label = '🤖 LSTM [офлайн]' if no_net else '🤖 Авт. LSTM'
+            col   = C['purple']
         elif method == 'rule-based':
-            if internet is False and config.ONLINE_FORECAST_ENABLED:
-                label = '📡 Правила: нет сети'
-            else:
-                label = '📡 Правила'
-            col = C['orange']
+            label = '📡 Правила: нет сети' if no_net else '📡 Правила'
+            col   = C['orange']
         else:  # insufficient_data
             draw.text((10, top + 2), '📡 Сбор данных...', font=self.f_label, fill=C['orange'])
             y = top + 17

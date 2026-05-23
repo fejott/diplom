@@ -265,6 +265,8 @@ def main() -> None:
                     'forecast':    forecast,
                     'data_count':  data_count,
                     'hazard':      hazard_alert,
+                    'bme_ok':      bme_ok,
+                    'gps_ok':      gps_ok,
                 }
                 try:
                     tft.render(tft_data)
