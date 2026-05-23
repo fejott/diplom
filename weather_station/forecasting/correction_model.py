@@ -64,6 +64,7 @@ class CorrectionModel:
         self._mean: Optional[np.ndarray] = None
         self._std:  Optional[np.ndarray] = None
         self._loaded = False
+        self._weights_mtime: float = 0.0   # last seen mtime of weights file
         self._try_load()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -71,6 +72,28 @@ class CorrectionModel:
     def is_ready(self) -> bool:
         """True when weights are loaded and inference can run."""
         return self._loaded
+
+    def reload_if_updated(self) -> bool:
+        """Reload weights from disk if the file has changed since last load.
+
+        Called from the main inference loop so that ``train-correction``
+        takes effect without restarting the service.
+
+        Returns:
+            True if a fresh reload was performed, False otherwise.
+        """
+        weights_path = config.CORRECTION_WEIGHTS_PATH
+        if not weights_path.endswith(".npz"):
+            weights_path = weights_path + ".npz"
+        try:
+            mtime = os.path.getmtime(weights_path)
+        except OSError:
+            return False
+        if mtime <= self._weights_mtime:
+            return False
+        logger.info("CorrectionModel weights updated on disk — reloading.")
+        self._try_load()
+        return True
 
     @staticmethod
     def _get_lstm_trained_at() -> Optional[str]:
@@ -474,6 +497,10 @@ class CorrectionModel:
             )
 
             self._loaded = True
+            try:
+                self._weights_mtime = os.path.getmtime(weights_path)
+            except OSError:
+                self._weights_mtime = 0.0
             logger.info("CorrectionModel loaded from %s", weights_path)
         except Exception as exc:
             self._loaded = False

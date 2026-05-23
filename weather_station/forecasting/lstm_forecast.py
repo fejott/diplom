@@ -59,6 +59,7 @@ class LSTMForecaster:
             logger.warning("TensorFlow not available — LSTM training disabled: %s", exc)
 
         self._correction = CorrectionModel()
+        self._predict_call_count = 0   # used to throttle correction reload checks
         self._try_load_from_disk()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -145,6 +146,13 @@ class LSTMForecaster:
                 valid_until=datetime.utcnow() + timedelta(hours=3),
                 model_version="lstm_v1",
             )
+
+            # Periodically check if correction weights were updated on disk
+            # (e.g. after train-correction) so the service picks them up
+            # without requiring a full restart.
+            self._predict_call_count += 1
+            if self._predict_call_count % 300 == 0:
+                self._correction.reload_if_updated()
 
             # Apply residual correction if model is ready.
             # Pass the actual current temperature so the correction model
