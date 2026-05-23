@@ -202,9 +202,9 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     steps   = config.FORECAST_STEPS   # [12, 24, 36] → +1h/+2h/+3h in 5-min units
     n_steps = len(steps)
 
-    print("═" * 82)
+    print("═" * 65)
     print("  ВАЛИДАЦИЯ НА ОТЛОЖЕННОЙ ВЫБОРКЕ")
-    print("═" * 82)
+    print("═" * 65)
     print(f"  Всего записей:   {n_total}")
     print(f"  Обучение (70%):  {n_train_raw} зап. (до {cutoff_ts[:16]})")
     print(f"  Отложено (30%):  {n_held_raw} зап. (с  {cutoff_ts[:16]})")
@@ -384,11 +384,9 @@ def cmd_validate(_args: argparse.Namespace) -> None:
         if not cm.is_ready():
             print("  Модель коррекции не обучена — колонка недоступна.")
 
-    # ── 7. Online API and Rule-Based MAE from research_data.db ───────────────
-    mae_api_temp  = [None] * n_steps
-    mae_api_pres  = [None] * n_steps
-    mae_rb_temp   = [None] * n_steps
-    mae_rb_pres   = [None] * n_steps
+    # ── 7. Online API MAE from research_data.db ───────────────────────────────
+    mae_api_temp = [None] * n_steps
+    mae_api_pres = [None] * n_steps
     horizon_labels = ["1h", "2h", "3h"]
     try:
         with sqlite3.connect(str(_RESEARCH_DB)) as conn:
@@ -396,26 +394,22 @@ def cmd_validate(_args: argparse.Namespace) -> None:
             for i, label in enumerate(horizon_labels[:n_steps]):
                 col_t = f"signed_error_temp_{label}"
                 col_p = f"signed_error_pres_{label}"
-                for mode, t_out, p_out in [
-                    ("online",     mae_api_temp, mae_api_pres),
-                    ("rule-based", mae_rb_temp,  mae_rb_pres),
-                ]:
-                    r = conn.execute(
-                        f"SELECT AVG(ABS(fv.{col_t})) AS mt, "
-                        f"       AVG(ABS(fv.{col_p})) AS mp "
-                        "FROM forecast_verification fv "
-                        "JOIN forecast_log fl ON fv.forecast_id = fl.id "
-                        "WHERE fl.mode = ? "
-                        "  AND fl.timestamp >= ? "
-                        f"  AND fv.{col_t} IS NOT NULL",
-                        (mode, cutoff_ts),
-                    ).fetchone()
-                    if r and r["mt"] is not None:
-                        t_out[i] = float(r["mt"])
-                        if r["mp"] is not None:
-                            p_out[i] = float(r["mp"])
+                r = conn.execute(
+                    f"SELECT AVG(ABS(fv.{col_t})) AS mt, "
+                    f"       AVG(ABS(fv.{col_p})) AS mp "
+                    "FROM forecast_verification fv "
+                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                    "WHERE fl.mode = 'online' "
+                    "  AND fl.timestamp >= ? "
+                    f"  AND fv.{col_t} IS NOT NULL",
+                    (cutoff_ts,),
+                ).fetchone()
+                if r and r["mt"] is not None:
+                    mae_api_temp[i] = float(r["mt"])
+                    if r["mp"] is not None:
+                        mae_api_pres[i] = float(r["mp"])
     except Exception as exc:
-        print(f"  Предупреждение: данные API/rule-based недоступны: {exc}")
+        print(f"  Предупреждение: данные API недоступны: {exc}")
 
     # ── 8. Print results ──────────────────────────────────────────────────────
     def _ft(v):
@@ -424,24 +418,23 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     def _fp(v):
         return f"{v:.4f} hPa" if v is not None else "—"
 
-    W = 82
     print()
-    print("═" * W)
+    print("═" * 65)
     print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {held_5min[-1][0][:16]}")
     print(f"  Образцов (5-мин): {n_seqs}")
-    print("─" * W)
-    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16} {'Rule-Based':>16}")
-    print(f"  {'MAE (°C)':<10} {'─'*16} {'─'*16} {'─'*16} {'─'*16}")
+    print("─" * 65)
+    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+    print(f"  {'MAE (°C)':<10} {'─'*16} {'─'*16} {'─'*16}")
     for i, h in enumerate(horizon_labels[:n_steps]):
         print(f"  +{h:<9} {_ft(mae_base_temp[i]):>16} "
-              f"{_ft(mae_corr_temp[i]):>16} {_ft(mae_api_temp[i]):>16} {_ft(mae_rb_temp[i]):>16}")
+              f"{_ft(mae_corr_temp[i]):>16} {_ft(mae_api_temp[i]):>16}")
     print()
-    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16} {'Rule-Based':>16}")
-    print(f"  {'MAE (hPa)':<10} {'─'*16} {'─'*16} {'─'*16} {'─'*16}")
+    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+    print(f"  {'MAE (hPa)':<10} {'─'*16} {'─'*16} {'─'*16}")
     for i, h in enumerate(horizon_labels[:n_steps]):
         print(f"  +{h:<9} {_fp(mae_base_pres[i]):>16} "
-              f"{_fp(mae_corr_pres[i]):>16} {_fp(mae_api_pres[i]):>16} {_fp(mae_rb_pres[i]):>16}")
-    print("═" * W)
+              f"{_fp(mae_corr_pres[i]):>16} {_fp(mae_api_pres[i]):>16}")
+    print("═" * 65)
 
 
 def cmd_backfill_signed_errors(_args: argparse.Namespace) -> None:
