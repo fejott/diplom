@@ -53,11 +53,24 @@ class ReportGenerator:
 
     Args:
         db_path: Override DB file path (default: research/research_data.db).
+        days:    If given, restrict all per-forecast metrics to the last N days.
+                 sensor_summary() always shows the full collection period.
     """
 
-    def __init__(self, db_path: Optional[pathlib.Path] = None) -> None:
+    def __init__(
+        self,
+        db_path: Optional[pathlib.Path] = None,
+        days: Optional[int] = None,
+    ) -> None:
         self._db_path  = db_path or _DB_PATH
         self._csv_dir  = self._db_path.parent
+        if days is not None:
+            from datetime import timedelta
+            self._since_ts: Optional[str] = (
+                datetime.utcnow() - timedelta(days=days)
+            ).isoformat()
+        else:
+            self._since_ts = None
 
     # ── Public report methods ─────────────────────────────────────────────────
 
@@ -120,8 +133,10 @@ class ReportGenerator:
 
     def forecast_accuracy(self) -> str:
         """MAE/RMSE per mode and horizon; best mode summary at the bottom."""
+        date_filter = "AND fl.timestamp >= ?" if self._since_ts else ""
+        params = (self._since_ts,) if self._since_ts else ()
         with _conn(self._db_path) as c:
-            rows = c.execute("""
+            rows = c.execute(f"""
                 SELECT
                     fl.mode                          AS mode,
                     COUNT(*)                         AS n,
@@ -136,15 +151,20 @@ class ReportGenerator:
                 FROM forecast_verification fv
                 JOIN forecast_log fl ON fv.forecast_id = fl.id
                 WHERE fv.verified_1h = 1
+                {date_filter}
                 GROUP BY fl.mode
-            """).fetchall()
+            """, params).fetchall()
 
         if not rows:
             return "forecast_verification: нет данных."
 
+        period_label = (
+            f" — последние данные (с {self._since_ts[:10]})"
+            if self._since_ts else " (всё время)"
+        )
         lines = [
             "═" * 60,
-            "  ТОЧНОСТЬ ПРОГНОЗА (по верифицированным записям)",
+            f"  ТОЧНОСТЬ ПРОГНОЗА{period_label}",
             "═" * 60,
         ]
 

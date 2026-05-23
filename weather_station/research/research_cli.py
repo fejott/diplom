@@ -3,7 +3,9 @@ Research CLI — quick access to diploma thesis data reports.
 
 Usage (from weather_station/):
     python research/research_cli.py status
+    python research/research_cli.py status --days 7
     python research/research_cli.py report
+    python research/research_cli.py report --days 7
     python research/research_cli.py export
     python research/research_cli.py compare-rp5
 """
@@ -14,6 +16,8 @@ import argparse
 import pathlib
 import sqlite3
 import sys
+from datetime import datetime, timedelta
+from typing import Optional
 
 # Allow running from weather_station/ root
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -23,7 +27,7 @@ from research.report_generator import ReportGenerator
 _DB_PATH = pathlib.Path(__file__).resolve().parent / "research_data.db"
 
 
-def _quick_status() -> str:
+def _quick_status(days: Optional[int] = None) -> str:
     """One-screen summary of collected data."""
     if not _DB_PATH.exists():
         return (
@@ -35,6 +39,16 @@ def _quick_status() -> str:
             "  первом запуске main.py.\n"
             "═" * 50
         )
+
+    since_ts: Optional[str] = None
+    if days is not None:
+        since_ts = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    def _where(col: str = "fl.timestamp") -> str:
+        return f"AND {col} >= ?" if since_ts else ""
+
+    def _params(*extra) -> tuple:
+        return ((since_ts, *extra) if since_ts else tuple(extra))
 
     with sqlite3.connect(str(_DB_PATH)) as c:
         c.row_factory = sqlite3.Row
@@ -56,22 +70,28 @@ def _quick_status() -> str:
         ).fetchall()
         mode_str = "  ".join(f"{r['mode']}: {r['n']}" for r in modes)
 
-        # Best MAE per mode (1h temp)
-        accuracy = c.execute("""
+        # Best MAE per mode (1h temp) — filtered by days if given
+        accuracy = c.execute(f"""
             SELECT fl.mode, AVG(fv.error_temp_1h) AS mae
             FROM forecast_verification fv
             JOIN forecast_log fl ON fv.forecast_id = fl.id
             WHERE fv.verified_1h = 1
+            {_where()}
             GROUP BY fl.mode
             ORDER BY mae
-        """).fetchall()
+        """, _params()).fetchall()
+
+    period_label = (
+        f"последние {days} дн. (с {since_ts[:10]})"
+        if since_ts else
+        f"{(first_ts or '?')[:16]} → {(last_ts or '?')[:16]}"
+    )
 
     lines = [
         "═" * 50,
         "  СТАТУС ИССЛЕДОВАНИЯ",
         "═" * 50,
-        f"  Период сбора:   "
-        f"{(first_ts or '?')[:16]} → {(last_ts or '?')[:16]}",
+        f"  Период:         {period_label}",
         f"  Измерений:      {n_sensor}",
         f"  Прогнозов:      {n_fc}  ({mode_str})",
         f"  Верифицировано: {n_verify}",
@@ -80,21 +100,23 @@ def _quick_status() -> str:
     ]
 
     if accuracy:
+        label = f"последние {days} дн." if days else "всё время"
         lines.append("")
-        lines.append("  Лучший MAE темп +1ч:")
+        lines.append(f"  MAE темп +1ч ({label}):")
         for r in accuracy:
-            lines.append(f"    {r['mode']:>12}:  {r['mae']:.3f}°C")
+            lines.append(f"    {r['mode']:>16}:  {r['mae']:.3f}°C")
 
     lines.append("═" * 50)
     return "\n".join(lines)
 
 
-def cmd_status(_args: argparse.Namespace) -> None:
-    print(_quick_status())
+def cmd_status(args: argparse.Namespace) -> None:
+    print(_quick_status(days=getattr(args, "days", None)))
 
 
-def cmd_report(_args: argparse.Namespace) -> None:
-    rg = ReportGenerator()
+def cmd_report(args: argparse.Namespace) -> None:
+    days = getattr(args, "days", None)
+    rg = ReportGenerator(days=days)
     print(rg.sensor_summary())
     print()
     print(rg.forecast_accuracy())
@@ -123,8 +145,18 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status",      help="Quick one-screen summary")
-    sub.add_parser("report",      help="Full text report to terminal")
+    p_status = sub.add_parser("status", help="Quick one-screen summary")
+    p_status.add_argument(
+        "--days", type=int, default=None, metavar="N",
+        help="Show MAE only for the last N days (default: all time)",
+    )
+
+    p_report = sub.add_parser("report", help="Full text report to terminal")
+    p_report.add_argument(
+        "--days", type=int, default=None, metavar="N",
+        help="Filter forecast accuracy to last N days (default: all time)",
+    )
+
     sub.add_parser("export",      help="Export CSV files for Excel")
     sub.add_parser("compare-rp5", help="Instructions for manual rp5.ru comparison")
 
