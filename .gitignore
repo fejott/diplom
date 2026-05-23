@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Databases — local data, never commit
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+*.log.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets / env
+.env
+*.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ERA5 raw download cache (large)
+weather_station/research/era5_*.nc
+weather_station/research/era5_*.grib
+weather_station/research/*.csv
