@@ -1,0 +1,11 @@
+[Unit]
+Description=Weather Station — daily correction model retrain
+After=network.target
+
+[Service]
+Type=oneshot
+User=fejot
+WorkingDirectory=/home/fejot/diplom/weather_station
+ExecStart=/home/fejot/diplom/venv/bin/python research/calibration_cli.py train-correction --yes
+StandardOutput=journal
+StandardError=journal

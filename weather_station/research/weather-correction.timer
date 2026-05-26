@@ -1,0 +1,10 @@
+[Unit]
+Description=Weather Station — daily correction model retrain at 07:00
+Requires=weather-correction.service
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

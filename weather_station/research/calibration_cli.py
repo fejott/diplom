@@ -101,8 +101,8 @@ def cmd_correction_status(_args: argparse.Namespace) -> None:
     print("\n".join(lines))
 
 
-def cmd_train_correction(_args: argparse.Namespace) -> None:
-    """Train the correction model (asks for confirmation first)."""
+def cmd_train_correction(args: argparse.Namespace) -> None:
+    """Train the correction model (asks for confirmation, or --yes for automation)."""
     cm = CorrectionModel()
     ok, msg = cm.can_train(str(_RESEARCH_DB))
 
@@ -112,10 +112,12 @@ def cmd_train_correction(_args: argparse.Namespace) -> None:
         print("  Обучение невозможно.")
         return
 
-    answer = input("  Начать обучение модели коррекции? [y/N] ").strip().lower()
-    if answer not in ("y", "yes", "д", "да"):
-        print("  Отменено.")
-        return
+    yes = getattr(args, "yes", False)
+    if not yes:
+        answer = input("  Начать обучение модели коррекции? [y/N] ").strip().lower()
+        if answer not in ("y", "yes", "д", "да"):
+            print("  Отменено.")
+            return
 
     print("  Обучение... (может занять несколько секунд)")
     result = cm.train(str(_RESEARCH_DB))
@@ -646,7 +648,11 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("correction-status",      help="Show correction model status")
-    sub.add_parser("train-correction",       help="Train the correction model")
+    p_train = sub.add_parser("train-correction", help="Train the correction model")
+    p_train.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt (for automated/cron use)",
+    )
     sub.add_parser("rollback-correction",    help="Delete correction model files")
     sub.add_parser("validate",               help="Held-out validation: LSTM vs correction vs API")
     sub.add_parser("backfill-signed-errors", help="Backfill signed errors for old LSTM verifications")
