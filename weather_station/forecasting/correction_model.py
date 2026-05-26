@@ -162,6 +162,14 @@ class CorrectionModel:
         # since_ts counter and leave 0 eligible samples indefinitely.
         window_ts = (datetime.utcnow() - timedelta(days=7)).isoformat()
         try:
+            # Ensure an index exists on readings.timestamp so the correlated
+            # subquery (one lookup per training row) runs in O(log N) not O(N).
+            with sqlite3.connect(config.DB_PATH) as wdb_idx:
+                wdb_idx.execute(
+                    "CREATE INDEX IF NOT EXISTS ix_readings_ts "
+                    "ON readings(timestamp)"
+                )
+
             with sqlite3.connect(research_db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 # Attach weather_history.db to pull the actual sensor temperature
