@@ -632,9 +632,9 @@ def cmd_lstm_status(_args: argparse.Namespace) -> None:
         lines.append("  MAE темп +1ч:    — (metrics.json не найден)")
 
     if mae_after is not None:
-        lines.append(f"  MAE темп +1ч:    {mae_after:.4f}°C  (с коррекцией)")
+        lines.append(f"  MAE коррекции:   {mae_after:.4f}°C  (train, 7-дневное окно)")
     else:
-        lines.append("  MAE темп +1ч:    — (коррекция не обучена)")
+        lines.append("  MAE коррекции:   — (коррекция не обучена)")
 
     lines.append("═" * 50)
     print("\n".join(lines))
