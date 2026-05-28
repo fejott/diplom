@@ -159,7 +159,7 @@ class TFTDisplay:
         draw.rectangle([(0, 0), (W, 26)], fill=C['header'])
         draw.line([(0, 26), (W, 26)], fill=C['accent'], width=1)
 
-        title = 'WEATHER STATION'
+        title = 'МЕТЕОСТАНЦИЯ'
         tw = draw.textlength(title, font=self.f_title)
         draw.text(((W - tw) / 2, 5), title, font=self.f_title, fill=C['accent'])
 
@@ -179,9 +179,9 @@ class TFTDisplay:
             draw.line([(0, 56), (self.WIDTH, 56)], fill=C['divider'], width=1)
 
         rows = [
-            ('TEMPERATURE', data.get('temperature'), '{:.1f} °C',  'white'),
-            ('HUMIDITY',    data.get('humidity'),    '{:.1f} %',   'blue'),
-            ('PRESSURE',    data.get('pressure'),    '{:.1f} hPa', 'green'),
+            ('ТЕМПЕРАТУРА', data.get('temperature'), '{:.1f} °C',  'white'),
+            ('ВЛАЖНОСТЬ',   data.get('humidity'),    '{:.1f} %',   'blue'),
+            ('ДАВЛЕНИЕ',    data.get('pressure'),    '{:.1f} hPa', 'green'),
         ]
         y = 38 if bme_ok else 57
         for label, value, fmt, col_key in rows:
@@ -388,6 +388,6 @@ class TFTDisplay:
     def _draw_footer(self, draw: ImageDraw.ImageDraw) -> None:
         """Thin footer bar at the very bottom.  Occupies y 308–320."""
         draw.line([(0, 308), (self.WIDTH, 308)], fill=C['divider'], width=1)
-        ver = 'ILI9341  Pi4 aarch64'
+        ver = 'ILI9341  RPi4 aarch64'
         tw  = draw.textlength(ver, font=self.f_tiny)
         draw.text(((self.WIDTH - tw) / 2, 310), ver, font=self.f_tiny, fill=C['divider'])

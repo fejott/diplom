@@ -81,40 +81,40 @@ def display(
 
     # ── Header ──────────────────────────────────────────────────────────
     lines.append(_hline(_TL, _TR))
-    lines.append(_row("🌤  WEATHER STATION"))
+    lines.append(_row("🌤  МЕТЕОСТАНЦИЯ"))
     lines.append(_hline())
 
     # ── Weather section ─────────────────────────────────────────────────
     if weather is not None:
-        lines.append(_row(f"Temperature  : {_fmt_float(weather.temperature, '°C')}"))
-        lines.append(_row(f"Humidity     : {_fmt_float(weather.humidity, '%')}"))
-        lines.append(_row(f"Pressure     : {_fmt_float(weather.pressure, 'hPa')}"))
-        lines.append(_row(f"Pressure SL  : {_fmt_float(weather.pressure_sl, 'hPa')}"))
+        lines.append(_row(f"Температура  : {_fmt_float(weather.temperature, '°C')}"))
+        lines.append(_row(f"Влажность    : {_fmt_float(weather.humidity, '%')}"))
+        lines.append(_row(f"Давление     : {_fmt_float(weather.pressure, 'hPa')}"))
+        lines.append(_row(f"Давл. (ур.м) : {_fmt_float(weather.pressure_sl, 'hPa')}"))
     else:
-        lines.append(_row("Temperature  : N/A"))
-        lines.append(_row("Humidity     : N/A"))
-        lines.append(_row("Pressure     : N/A"))
-        lines.append(_row("Pressure SL  : N/A"))
-        lines.append(_row("⚠  WEATHER SENSOR ERROR"))
+        lines.append(_row("Температура  : N/A"))
+        lines.append(_row("Влажность    : N/A"))
+        lines.append(_row("Давление     : N/A"))
+        lines.append(_row("Давл. (ур.м) : N/A"))
+        lines.append(_row("⚠  ОШИБКА ДАТЧИКА BME280"))
 
     lines.append(_hline())
 
     # ── GPS section ──────────────────────────────────────────────────────
     if gps is not None:
-        lines.append(_row(f"GPS Fix      : {_fmt_bool(gps.fix)}"))
-        lines.append(_row(f"Latitude     : {_fmt_float(gps.latitude, '°', 6)}"))
-        lines.append(_row(f"Longitude    : {_fmt_float(gps.longitude, '°', 6)}"))
-        lines.append(_row(f"Altitude     : {_fmt_float(gps.altitude, 'm', 1)}"))
-        lines.append(_row(f"Satellites   : {gps.satellites if gps.fix else 'N/A'}"))
+        lines.append(_row(f"GPS-фикс     : {'ДА' if gps.fix else 'НЕТ'}"))
+        lines.append(_row(f"Широта       : {_fmt_float(gps.latitude, '°', 6)}"))
+        lines.append(_row(f"Долгота      : {_fmt_float(gps.longitude, '°', 6)}"))
+        lines.append(_row(f"Высота       : {_fmt_float(gps.altitude, 'м', 1)}"))
+        lines.append(_row(f"Спутники     : {gps.satellites if gps.fix else 'N/A'}"))
         if not gps.fix:
-            lines.append(_row("⚠  WAITING FOR GPS FIX"))
+            lines.append(_row("⚠  ОЖИДАНИЕ GPS-СИГНАЛА"))
     else:
-        lines.append(_row("GPS Fix      : N/A"))
-        lines.append(_row("Latitude     : N/A"))
-        lines.append(_row("Longitude    : N/A"))
-        lines.append(_row("Altitude     : N/A"))
-        lines.append(_row("Satellites   : N/A"))
-        lines.append(_row("⚠  GPS SENSOR ERROR"))
+        lines.append(_row("GPS-фикс     : N/A"))
+        lines.append(_row("Широта       : N/A"))
+        lines.append(_row("Долгота      : N/A"))
+        lines.append(_row("Высота       : N/A"))
+        lines.append(_row("Спутники     : N/A"))
+        lines.append(_row("⚠  ОШИБКА GPS-МОДУЛЯ"))
 
     lines.append(_hline())
 
@@ -149,7 +149,7 @@ def display(
 
     # ── Footer: last update timestamp ───────────────────────────────────
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines.append(_row(f"Updated      : {now}"))
+    lines.append(_row(f"Обновлено    : {now}"))
     lines.append(_hline(_BL, _BR))
 
     print("\n".join(lines))
