@@ -348,7 +348,7 @@ class LSTMForecaster:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _try_load_from_disk(self) -> None:
-        """Load scaler and numpy weights from disk if they exist."""
+        """Load scaler, weights, and val_loss from disk if they exist."""
         try:
             if os.path.exists(config.SCALER_PATH):
                 with open(config.SCALER_PATH, 'r') as fh:
@@ -356,6 +356,16 @@ class LSTMForecaster:
                 self._scaler_min = np.array(params['min'], dtype=np.float32)
                 self._scaler_max = np.array(params['max'], dtype=np.float32)
                 logger.info("Scaler loaded from %s.", config.SCALER_PATH)
+
+            # Restore val_loss so confidence is non-zero after service restart
+            if os.path.exists(config.METRICS_PATH):
+                try:
+                    with open(config.METRICS_PATH, 'r') as fh:
+                        saved = json.load(fh)
+                    if 'val_loss' in saved:
+                        self._last_val_loss = float(saved['val_loss'])
+                except Exception:
+                    pass
 
             weights_file = config.WEIGHTS_PATH + ".npz" if not config.WEIGHTS_PATH.endswith(".npz") else config.WEIGHTS_PATH
             if os.path.exists(weights_file) and self._tf_available:
