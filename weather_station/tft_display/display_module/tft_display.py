@@ -159,7 +159,7 @@ class TFTDisplay:
         draw.rectangle([(0, 0), (W, 26)], fill=C['header'])
         draw.line([(0, 26), (W, 26)], fill=C['accent'], width=1)
 
-        title = 'МЕТЕОСТАНЦИЯ'
+        title = 'WEATHER STATION'
         tw = draw.textlength(title, font=self.f_title)
         draw.text(((W - tw) / 2, 5), title, font=self.f_title, fill=C['accent'])
 
