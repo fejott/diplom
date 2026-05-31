@@ -6,6 +6,6 @@ After=network.target
 Type=oneshot
 User=fejot
 WorkingDirectory=/home/fejot/diplom/weather_station
-ExecStart=/home/fejot/diplom/venv/bin/python research/calibration_cli.py train-correction --yes
+ExecStart=/home/fejot/diplom/weather_station/venv/bin/python3 research/calibration_cli.py train-correction --yes
 StandardOutput=journal
 StandardError=journal
