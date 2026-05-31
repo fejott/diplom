@@ -315,13 +315,21 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     min_tiled = np.tile(s_min, n_steps)
     y_pred    = y_pred_norm * rng_tiled + min_tiled  # (n_seqs, n_steps*3)
 
-    # MAE — Base LSTM
+    # MAE + RMSE — Base LSTM
     mae_base_temp = [
         float(np.mean(np.abs(y_pred[:, i * 3]     - y_true[:, i * 3])))
         for i in range(n_steps)
     ]
     mae_base_pres = [
         float(np.mean(np.abs(y_pred[:, i * 3 + 2] - y_true[:, i * 3 + 2])))
+        for i in range(n_steps)
+    ]
+    rmse_base_temp = [
+        float(np.sqrt(np.mean((y_pred[:, i * 3]     - y_true[:, i * 3])     ** 2)))
+        for i in range(n_steps)
+    ]
+    rmse_base_pres = [
+        float(np.sqrt(np.mean((y_pred[:, i * 3 + 2] - y_true[:, i * 3 + 2]) ** 2)))
         for i in range(n_steps)
     ]
 
@@ -380,15 +388,27 @@ def cmd_validate(_args: argparse.Namespace) -> None:
             float(np.mean(np.abs(y_corr[:, i * 3 + 2] - y_true[:, i * 3 + 2])))
             for i in range(n_steps)
         ]
+        rmse_corr_temp = [
+            float(np.sqrt(np.mean((y_corr[:, i * 3]     - y_true[:, i * 3])     ** 2)))
+            for i in range(n_steps)
+        ]
+        rmse_corr_pres = [
+            float(np.sqrt(np.mean((y_corr[:, i * 3 + 2] - y_true[:, i * 3 + 2]) ** 2)))
+            for i in range(n_steps)
+        ]
     else:
-        mae_corr_temp = [None] * n_steps
-        mae_corr_pres = [None] * n_steps
+        mae_corr_temp  = [None] * n_steps
+        mae_corr_pres  = [None] * n_steps
+        rmse_corr_temp = [None] * n_steps
+        rmse_corr_pres = [None] * n_steps
         if not cm.is_ready():
             print("  Модель коррекции не обучена — колонка недоступна.")
 
-    # ── 7. Online API MAE from research_data.db ───────────────────────────────
-    mae_api_temp = [None] * n_steps
-    mae_api_pres = [None] * n_steps
+    # ── 7. Online API MAE + RMSE from research_data.db ───────────────────────
+    mae_api_temp  = [None] * n_steps
+    mae_api_pres  = [None] * n_steps
+    rmse_api_temp = [None] * n_steps
+    rmse_api_pres = [None] * n_steps
     horizon_labels = ["1h", "2h", "3h"]
     try:
         with sqlite3.connect(str(_RESEARCH_DB)) as conn:
@@ -397,8 +417,10 @@ def cmd_validate(_args: argparse.Namespace) -> None:
                 col_t = f"signed_error_temp_{label}"
                 col_p = f"signed_error_pres_{label}"
                 r = conn.execute(
-                    f"SELECT AVG(ABS(fv.{col_t})) AS mt, "
-                    f"       AVG(ABS(fv.{col_p})) AS mp "
+                    f"SELECT AVG(ABS(fv.{col_t}))        AS mt, "
+                    f"       AVG(ABS(fv.{col_p}))        AS mp, "
+                    f"       AVG(fv.{col_t}*fv.{col_t})  AS vt, "
+                    f"       AVG(fv.{col_p}*fv.{col_p})  AS vp "
                     "FROM forecast_verification fv "
                     "JOIN forecast_log fl ON fv.forecast_id = fl.id "
                     "WHERE fl.mode = 'online' "
@@ -407,9 +429,11 @@ def cmd_validate(_args: argparse.Namespace) -> None:
                     (cutoff_ts,),
                 ).fetchone()
                 if r and r["mt"] is not None:
-                    mae_api_temp[i] = float(r["mt"])
+                    mae_api_temp[i]  = float(r["mt"])
+                    rmse_api_temp[i] = float(r["vt"] ** 0.5)
                     if r["mp"] is not None:
-                        mae_api_pres[i] = float(r["mp"])
+                        mae_api_pres[i]  = float(r["mp"])
+                        rmse_api_pres[i] = float(r["vp"] ** 0.5)
     except Exception as exc:
         print(f"  Предупреждение: данные API недоступны: {exc}")
 
@@ -425,17 +449,37 @@ def cmd_validate(_args: argparse.Namespace) -> None:
     print(f"  Период отложенной выборки: {cutoff_ts[:16]}  →  {held_5min[-1][0][:16]}")
     print(f"  Образцов (5-мин): {n_seqs}")
     print("─" * 65)
+
+    # Temperature MAE
     print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
     print(f"  {'MAE (°C)':<10} {'─'*16} {'─'*16} {'─'*16}")
     for i, h in enumerate(horizon_labels[:n_steps]):
         print(f"  +{h:<9} {_ft(mae_base_temp[i]):>16} "
               f"{_ft(mae_corr_temp[i]):>16} {_ft(mae_api_temp[i]):>16}")
     print()
+
+    # Temperature RMSE
+    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+    print(f"  {'RMSE (°C)':<10} {'─'*16} {'─'*16} {'─'*16}")
+    for i, h in enumerate(horizon_labels[:n_steps]):
+        print(f"  +{h:<9} {_ft(rmse_base_temp[i]):>16} "
+              f"{_ft(rmse_corr_temp[i]):>16} {_ft(rmse_api_temp[i]):>16}")
+    print()
+
+    # Pressure MAE
     print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
     print(f"  {'MAE (hPa)':<10} {'─'*16} {'─'*16} {'─'*16}")
     for i, h in enumerate(horizon_labels[:n_steps]):
         print(f"  +{h:<9} {_fp(mae_base_pres[i]):>16} "
               f"{_fp(mae_corr_pres[i]):>16} {_fp(mae_api_pres[i]):>16}")
+    print()
+
+    # Pressure RMSE
+    print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+    print(f"  {'RMSE (hPa)':<10} {'─'*16} {'─'*16} {'─'*16}")
+    for i, h in enumerate(horizon_labels[:n_steps]):
+        print(f"  +{h:<9} {_fp(rmse_base_pres[i]):>16} "
+              f"{_fp(rmse_corr_pres[i]):>16} {_fp(rmse_api_pres[i]):>16}")
     print("═" * 65)
 
 
