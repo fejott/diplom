@@ -684,6 +684,78 @@ def cmd_lstm_status(_args: argparse.Namespace) -> None:
     print("\n".join(lines))
 
 
+def cmd_period_stats(args: argparse.Namespace) -> None:
+    """Compute MAE + RMSE from research_data.db for a specific calendar period."""
+    import sqlite3
+    import math
+
+    since = args.since  # e.g. "2026-05-14"
+    until = args.until  # e.g. "2026-05-17"
+
+    modes = [
+        ("lstm_corrected", "LSTM+коррекция"),
+        ("online",         "Online API     "),
+        ("lstm",           "Базовый LSTM   "),
+    ]
+    horizons = [("1h", "signed_error_temp_1h", "signed_error_pres_1h"),
+                ("2h", "signed_error_temp_2h", "signed_error_pres_2h"),
+                ("3h", "signed_error_temp_3h", "signed_error_pres_3h")]
+
+    print("═" * 75)
+    print(f"  СТАТИСТИКА ЗА ПЕРИОД: {since}  →  {until}")
+    print("═" * 75)
+
+    try:
+        with sqlite3.connect(str(_RESEARCH_DB)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Count samples per mode
+            for mode, label in modes:
+                r = conn.execute(
+                    "SELECT COUNT(*) AS n FROM forecast_verification fv "
+                    "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                    "WHERE fl.mode = ? AND fl.timestamp >= ? AND fl.timestamp < ? "
+                    "AND fv.signed_error_temp_1h IS NOT NULL",
+                    (mode, since, until),
+                ).fetchone()
+                n = r["n"] if r else 0
+                print(f"\n  ▸ {label}  (N={n})")
+
+                if n == 0:
+                    print("    Нет данных за период.")
+                    continue
+
+                print(f"    {'Горизонт':<8} {'MAE темп':>10} {'RMSE темп':>10} "
+                      f"{'MAE давл':>11} {'RMSE давл':>11}")
+                print(f"    {'─'*8} {'─'*10} {'─'*10} {'─'*11} {'─'*11}")
+
+                for h, col_t, col_p in horizons:
+                    r2 = conn.execute(
+                        f"SELECT AVG(ABS(fv.{col_t})) AS mae_t, "
+                        f"       AVG(fv.{col_t}*fv.{col_t}) AS mse_t, "
+                        f"       AVG(ABS(fv.{col_p})) AS mae_p, "
+                        f"       AVG(fv.{col_p}*fv.{col_p}) AS mse_p "
+                        "FROM forecast_verification fv "
+                        "JOIN forecast_log fl ON fv.forecast_id = fl.id "
+                        "WHERE fl.mode = ? AND fl.timestamp >= ? AND fl.timestamp < ? "
+                        f"AND fv.{col_t} IS NOT NULL",
+                        (mode, since, until),
+                    ).fetchone()
+
+                    mae_t  = f"{r2['mae_t']:.4f}°C"   if r2["mae_t"]  is not None else "—"
+                    rmse_t = f"{math.sqrt(r2['mse_t']):.4f}°C" if r2["mse_t"] is not None else "—"
+                    mae_p  = f"{r2['mae_p']:.4f} hPa" if r2["mae_p"]  is not None else "—"
+                    rmse_p = f"{math.sqrt(r2['mse_p']):.4f} hPa" if r2["mse_p"] is not None else "—"
+
+                    print(f"    +{h:<7} {mae_t:>10} {rmse_t:>10} {mae_p:>11} {rmse_p:>11}")
+
+    except Exception as exc:
+        print(f"  Ошибка: {exc}")
+
+    print()
+    print("═" * 75)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="calibration_cli",
@@ -701,6 +773,11 @@ def main() -> None:
     sub.add_parser("validate",               help="Held-out validation: LSTM vs correction vs API")
     sub.add_parser("backfill-signed-errors", help="Backfill signed errors for old LSTM verifications")
     sub.add_parser("lstm-status",            help="Show frozen LSTM model status")
+    p_ps = sub.add_parser("period-stats",   help="MAE + RMSE for a specific calendar period")
+    p_ps.add_argument("--since", required=True, metavar="YYYY-MM-DD",
+                      help="Start date (inclusive)")
+    p_ps.add_argument("--until", required=True, metavar="YYYY-MM-DD",
+                      help="End date (exclusive)")
 
     args = parser.parse_args()
     dispatch = {
@@ -710,6 +787,7 @@ def main() -> None:
         "validate":               cmd_validate,
         "backfill-signed-errors": cmd_backfill_signed_errors,
         "lstm-status":            cmd_lstm_status,
+        "period-stats":           cmd_period_stats,
     }
     dispatch[args.command](args)
 
