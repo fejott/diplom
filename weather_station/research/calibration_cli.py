@@ -684,6 +684,233 @@ def cmd_lstm_status(_args: argparse.Namespace) -> None:
     print("\n".join(lines))
 
 
+def cmd_validate_period(args: argparse.Namespace) -> None:
+    """Scientific MAE+RMSE for a specific date range using the current LSTM+correction model."""
+    import sqlite3
+    from datetime import datetime as _dt2, timedelta
+
+    import numpy as np
+    from forecasting.correction_model import CorrectionModel
+
+    since_str = args.since   # "2026-05-14"
+    until_str = args.until   # "2026-05-17"
+
+    # ── 1. Load readings (with context window before since) ───────────────────
+    try:
+        with sqlite3.connect(config.DB_PATH) as conn:
+            all_rows = conn.execute(
+                "SELECT timestamp, temperature, humidity, pressure "
+                "FROM readings ORDER BY id"
+            ).fetchall()
+    except Exception as exc:
+        print(f"  Ошибка чтения {config.DB_PATH}: {exc}")
+        return
+
+    seq   = config.SEQUENCE_LENGTH
+    steps = config.FORECAST_STEPS
+    n_steps = len(steps)
+
+    # ── 2. Resample to 5-min ──────────────────────────────────────────────────
+    from collections import defaultdict
+    def _resample(rows):
+        groups: dict = defaultdict(list)
+        for r in rows:
+            ts = _dt2.fromisoformat(r[0])
+            bk = ts.replace(minute=(ts.minute // 5) * 5, second=0, microsecond=0)
+            groups[bk].append(r)
+        out = []
+        for bk in sorted(groups.keys()):
+            grp = groups[bk]; n = len(grp)
+            out.append((bk.isoformat(),
+                        sum(r[1] for r in grp)/n,
+                        sum(r[2] for r in grp)/n,
+                        sum(r[3] for r in grp)/n))
+        return out
+
+    all_5min = _resample(all_rows)
+
+    # Find indices for the period (plus enough context before it)
+    period_start = _dt2.fromisoformat(since_str)
+    period_end   = _dt2.fromisoformat(until_str)
+
+    # Include seq*5 min of context before since for LSTM input
+    context_start = period_start - timedelta(minutes=seq * 5 + 10)
+
+    rows_ctx  = [(ts, t, h, p) for ts, t, h, p in all_5min
+                 if _dt2.fromisoformat(ts) >= context_start]
+    rows_test = [(ts, t, h, p) for ts, t, h, p in all_5min
+                 if period_start <= _dt2.fromisoformat(ts) < period_end]
+
+    print("═" * 65)
+    print(f"  ВАЛИДАЦИЯ ПЕРИОДА: {since_str}  →  {until_str}")
+    print("═" * 65)
+    print(f"  Записей в периоде (5-мин): {len(rows_test)}")
+
+    if len(rows_ctx) < seq + max(steps):
+        print("  Недостаточно данных для оценки.")
+        return
+
+    # ── 3. Load scaler ────────────────────────────────────────────────────────
+    if not os.path.exists(config.SCALER_PATH):
+        print("  Scaler не найден."); return
+    with open(config.SCALER_PATH) as fh:
+        sc = json.load(fh)
+    s_min = np.array(sc["min"], dtype=np.float32)
+    s_max = np.array(sc["max"], dtype=np.float32)
+    rng   = s_max - s_min; rng[rng == 0] = 1.0
+
+    data_ctx = np.array([[r[1], r[2], r[3]] for r in rows_ctx], dtype=np.float32)
+    norm_ctx  = (data_ctx - s_min) / rng
+
+    # ── 4. Load LSTM ──────────────────────────────────────────────────────────
+    weights_file = config.WEIGHTS_PATH
+    if not weights_file.endswith(".npz"): weights_file += ".npz"
+    if not os.path.exists(weights_file):
+        print("  Веса LSTM не найдены."); return
+
+    print("  Загрузка LSTM модели...")
+    try:
+        import tensorflow as tf
+        n_out = 3 * n_steps
+        model = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(seq, 3)),
+            tf.keras.layers.LSTM(config.LSTM_UNITS, return_sequences=True),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.LSTM(config.LSTM_UNITS),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Dense(n_out),
+        ])
+        w_data = np.load(weights_file, allow_pickle=False)
+        model.set_weights([w_data[f"arr_{i}"] for i in range(len(w_data.files))])
+    except Exception as exc:
+        print(f"  Ошибка загрузки модели: {exc}"); return
+
+    # ── 5. Build sequences: only predict for rows_test timestamps ─────────────
+    # Map test timestamps to indices in rows_ctx
+    ctx_ts = [r[0] for r in rows_ctx]
+    X_list, y_true_list, ts_list = [], [], []
+    rng_tiled = np.tile(rng, n_steps)
+    min_tiled = np.tile(s_min, n_steps)
+
+    for ts, t, h, p in rows_test:
+        # Find this row in context array
+        try:
+            idx = ctx_ts.index(ts)
+        except ValueError:
+            continue
+        if idx < seq:
+            continue
+        # Check we have ground truth (idx + max(steps) must be within ctx)
+        target_idx = idx + max(steps)
+        if target_idx >= len(rows_ctx):
+            continue
+        X_list.append(norm_ctx[idx - seq: idx])
+        targets = []
+        for st in steps:
+            ti = idx + st - 1
+            if ti >= len(rows_ctx): targets.extend([0,0,0]); continue
+            targets.extend(data_ctx[ti])
+        y_true_list.append(targets)
+        ts_list.append(ts)
+
+    if not X_list:
+        print("  Не удалось построить последовательности для периода."); return
+
+    X      = np.array(X_list, dtype=np.float32)
+    y_true = np.array(y_true_list, dtype=np.float32)
+
+    print(f"  Последовательностей: {len(X_list)}")
+    print("  Вычисление предсказаний LSTM...")
+    y_pred_norm = model.predict(X, batch_size=64, verbose=0)
+    y_pred = y_pred_norm * rng_tiled + min_tiled
+
+    # ── 6. Base LSTM metrics ──────────────────────────────────────────────────
+    mae_base_temp  = [float(np.mean(np.abs(y_pred[:, i*3]   - y_true[:, i*3])))   for i in range(n_steps)]
+    rmse_base_temp = [float(np.sqrt(np.mean((y_pred[:, i*3] - y_true[:, i*3])**2))) for i in range(n_steps)]
+    mae_base_pres  = [float(np.mean(np.abs(y_pred[:, i*3+2]   - y_true[:, i*3+2])))   for i in range(n_steps)]
+    rmse_base_pres = [float(np.sqrt(np.mean((y_pred[:, i*3+2] - y_true[:, i*3+2])**2))) for i in range(n_steps)]
+
+    # ── 7. Correction model ───────────────────────────────────────────────────
+    cm = CorrectionModel()
+    if cm.is_ready() and n_steps == 3:
+        print("  Применение модели коррекции...")
+        from datetime import datetime as _dt
+        dt_list  = [_dt.fromisoformat(ts) for ts in ts_list]
+        hours    = np.array([d.hour      for d in dt_list], dtype=np.float32)
+        weekdays = np.array([d.weekday() for d in dt_list], dtype=np.float32)
+        sin_h    = np.sin(2*np.pi*hours/24).astype(np.float32)
+        cos_h    = np.cos(2*np.pi*hours/24).astype(np.float32)
+        sin_dow  = np.sin(2*np.pi*weekdays/7).astype(np.float32)
+        cos_dow  = np.cos(2*np.pi*weekdays/7).astype(np.float32)
+        cur_temp = X[:, -1, 0] * rng[0] + s_min[0]
+        cur_pres = X[:, -1, 2] * rng[2] + s_min[2]
+        pres_trend = y_pred[:, (n_steps-1)*3+2] - cur_pres
+        X_corr = np.column_stack([
+            y_pred[:,0], y_pred[:,3], y_pred[:,6],
+            y_pred[:,2], y_pred[:,5], y_pred[:,8],
+            pres_trend, sin_h, cos_h, sin_dow, cos_dow, cur_temp,
+        ]).astype(np.float32)
+        deltas = cm.predict_correction_batch(X_corr)
+        y_corr = y_pred.copy()
+        for i in range(n_steps):
+            y_corr[:, i*3]   += deltas[:, i]
+            y_corr[:, i*3+2] += deltas[:, n_steps+i]
+        mae_corr_temp  = [float(np.mean(np.abs(y_corr[:, i*3]   - y_true[:, i*3])))     for i in range(n_steps)]
+        rmse_corr_temp = [float(np.sqrt(np.mean((y_corr[:, i*3] - y_true[:, i*3])**2))) for i in range(n_steps)]
+        mae_corr_pres  = [float(np.mean(np.abs(y_corr[:, i*3+2]   - y_true[:, i*3+2])))     for i in range(n_steps)]
+        rmse_corr_pres = [float(np.sqrt(np.mean((y_corr[:, i*3+2] - y_true[:, i*3+2])**2))) for i in range(n_steps)]
+    else:
+        mae_corr_temp = rmse_corr_temp = mae_corr_pres = rmse_corr_pres = [None]*n_steps
+
+    # ── 8. Online API from research_data.db ───────────────────────────────────
+    mae_api_temp = rmse_api_temp = mae_api_pres = rmse_api_pres = [None]*n_steps
+    horizon_labels = ["1h", "2h", "3h"]
+    try:
+        with sqlite3.connect(str(_RESEARCH_DB)) as conn:
+            conn.row_factory = sqlite3.Row
+            for i, label in enumerate(horizon_labels[:n_steps]):
+                col_t = f"signed_error_temp_{label}"
+                col_p = f"signed_error_pres_{label}"
+                r = conn.execute(
+                    f"SELECT AVG(ABS(fv.{col_t})) AS mt, AVG(fv.{col_t}*fv.{col_t}) AS vt,"
+                    f"       AVG(ABS(fv.{col_p})) AS mp, AVG(fv.{col_p}*fv.{col_p}) AS vp "
+                    "FROM forecast_verification fv JOIN forecast_log fl ON fv.forecast_id=fl.id "
+                    "WHERE fl.mode='online' AND fl.timestamp>=? AND fl.timestamp<? "
+                    f"AND fv.{col_t} IS NOT NULL",
+                    (since_str, until_str),
+                ).fetchone()
+                if r and r["mt"] is not None:
+                    if mae_api_temp == [None]*n_steps: mae_api_temp = [None]*n_steps; rmse_api_temp = [None]*n_steps
+                    mae_api_temp[i]  = float(r["mt"])
+                    rmse_api_temp[i] = float(r["vt"]**0.5)
+                    if r["mp"] is not None:
+                        if mae_api_pres == [None]*n_steps: mae_api_pres = [None]*n_steps; rmse_api_pres = [None]*n_steps
+                        mae_api_pres[i]  = float(r["mp"])
+                        rmse_api_pres[i] = float(r["vp"]**0.5)
+    except Exception as exc:
+        print(f"  Предупреждение: данные API недоступны: {exc}")
+
+    # ── 9. Print ──────────────────────────────────────────────────────────────
+    def _ft(v): return f"{v:.4f}°C"   if v is not None else "—"
+    def _fp(v): return f"{v:.4f} hPa" if v is not None else "—"
+    hl = horizon_labels[:n_steps]
+
+    print()
+    print("─" * 65)
+    for metric, base, corr, api, unit in [
+        ("MAE  (°C)",  mae_base_temp,  mae_corr_temp,  mae_api_temp,  _ft),
+        ("RMSE (°C)",  rmse_base_temp, rmse_corr_temp, rmse_api_temp, _ft),
+        ("MAE  (hPa)", mae_base_pres,  mae_corr_pres,  mae_api_pres,  _fp),
+        ("RMSE (hPa)", rmse_base_pres, rmse_corr_pres, rmse_api_pres, _fp),
+    ]:
+        print(f"  {'Горизонт':<10} {'Базовый LSTM':>16} {'LSTM+Корр.':>16} {'Online API':>16}")
+        print(f"  {metric:<10} {'─'*16} {'─'*16} {'─'*16}")
+        for i, h in enumerate(hl):
+            print(f"  +{h:<9} {unit(base[i]):>16} {unit(corr[i]):>16} {unit(api[i]):>16}")
+        print()
+    print("═" * 65)
+
+
 def cmd_period_stats(args: argparse.Namespace) -> None:
     """Compute MAE + RMSE from research_data.db for a specific calendar period."""
     import sqlite3
@@ -773,11 +1000,12 @@ def main() -> None:
     sub.add_parser("validate",               help="Held-out validation: LSTM vs correction vs API")
     sub.add_parser("backfill-signed-errors", help="Backfill signed errors for old LSTM verifications")
     sub.add_parser("lstm-status",            help="Show frozen LSTM model status")
-    p_ps = sub.add_parser("period-stats",   help="MAE + RMSE for a specific calendar period")
-    p_ps.add_argument("--since", required=True, metavar="YYYY-MM-DD",
-                      help="Start date (inclusive)")
-    p_ps.add_argument("--until", required=True, metavar="YYYY-MM-DD",
-                      help="End date (exclusive)")
+    p_ps = sub.add_parser("period-stats",    help="Operational MAE+RMSE from DB for a date range")
+    p_ps.add_argument("--since", required=True, metavar="YYYY-MM-DD", help="Start date (inclusive)")
+    p_ps.add_argument("--until", required=True, metavar="YYYY-MM-DD", help="End date (exclusive)")
+    p_vp = sub.add_parser("validate-period", help="Scientific MAE+RMSE with current model for a date range")
+    p_vp.add_argument("--since", required=True, metavar="YYYY-MM-DD", help="Start date (inclusive)")
+    p_vp.add_argument("--until", required=True, metavar="YYYY-MM-DD", help="End date (exclusive)")
 
     args = parser.parse_args()
     dispatch = {
@@ -788,6 +1016,7 @@ def main() -> None:
         "backfill-signed-errors": cmd_backfill_signed_errors,
         "lstm-status":            cmd_lstm_status,
         "period-stats":           cmd_period_stats,
+        "validate-period":        cmd_validate_period,
     }
     dispatch[args.command](args)
 
